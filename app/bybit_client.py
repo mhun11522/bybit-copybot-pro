@@ -2,6 +2,7 @@ import time
 import hmac
 import hashlib
 import json
+from decimal import Decimal, ROUND_DOWN
 import requests
 from app import settings
 
@@ -39,7 +40,6 @@ class BybitClient:
         url = f"{self.endpoint}{path}"
         self._maybe_sync_time(force=True)
         ts = int(self._epoch_ms() + self._time_offset_ms - 500)
-        # Compact JSON string for signing AND sending
         body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
         headers = {
             "X-BAPI-API-KEY": self.key,
@@ -48,12 +48,19 @@ class BybitClient:
             "X-BAPI-SIGN": self._sign_headers(ts, self.recv_window_ms, body=body),
             "Content-Type": "application/json",
         }
-        return self.session.post(url, headers=headers, data=body_str.encode("utf-8")).json()
+        try:
+            resp = self.session.post(url, headers=headers, data=body_str.encode("utf-8"))
+            return resp.json()
+        except Exception as e:
+            return {"retCode": -1, "retMsg": "HTTP/JSON error", "error": str(e)}
 
     def _get(self, path: str, params: dict | None = None, auth: bool = False):
         url = f"{self.endpoint}{path}"
         if not auth:
-            return self.session.get(url, params=params).json()
+            try:
+                return self.session.get(url, params=params).json()
+            except Exception as e:
+                return {"retCode": -1, "retMsg": "HTTP/JSON error", "error": str(e)}
         # Authenticated GET
         self._maybe_sync_time(force=True)
         ts = int(self._epoch_ms() + self._time_offset_ms - 500)
@@ -67,7 +74,10 @@ class BybitClient:
             "X-BAPI-RECV-WINDOW": str(self.recv_window_ms),
             "X-BAPI-SIGN": self._sign_headers(ts, self.recv_window_ms, query_string=qs),
         }
-        return self.session.get(url, headers=headers, params=items).json()
+        try:
+            return self.session.get(url, headers=headers, params=items).json()
+        except Exception as e:
+            return {"retCode": -1, "retMsg": "HTTP/JSON error", "error": str(e)}
 
     def _epoch_ms(self) -> int:
         return int(time.time() * 1000)
@@ -164,6 +174,13 @@ class BybitClient:
         }
         return self._get("/v5/order/realtime", params, auth=True)
 
+    def get_order_history(self, symbol: str):
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+        }
+        return self._get("/v5/order/history", params, auth=True)
+
     # Step 7 additions: positions and TP/SL
     def get_positions(self, symbol: str):
         params = {
@@ -221,5 +238,25 @@ class BybitClient:
         body = {
             "category": "linear",
             "symbol": symbol,
+            "positionIdx": 0,
         }
         return self._post("/v5/order/cancel-all", body)
+
+    # Quantization helpers to avoid tick/step mistakes at call sites
+    @staticmethod
+    def quantize_price(price: str | float | Decimal, tick: str | float | Decimal) -> str:
+        p = Decimal(str(price))
+        t = Decimal(str(tick))
+        if t == 0:
+            return str(p)
+        q = (p / t).quantize(Decimal("1")) * t
+        return f"{q}"
+
+    @staticmethod
+    def quantize_qty(qty: str | float | Decimal, step: str | float | Decimal) -> str:
+        q = Decimal(str(qty))
+        s = Decimal(str(step))
+        if s == 0:
+            return str(q)
+        qd = (q / s).to_integral_value(rounding=ROUND_DOWN) * s
+        return f"{qd}"

@@ -1,5 +1,7 @@
 import asyncio
 from decimal import Decimal
+from app.telegram.output import send_message
+from app.telegram import templates
 
 
 class TrailingStopManager:
@@ -49,6 +51,10 @@ class TrailingStopManager:
                         )
                         self.last_sl = new_sl
                         self.active = True
+                        try:
+                            await send_message(templates.trailing_moved(self.symbol, str(last)))
+                        except Exception:
+                            pass
                 await asyncio.sleep(5)
             except Exception as e:
                 print("Trailing stop error:", e)

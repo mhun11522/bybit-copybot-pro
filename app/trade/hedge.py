@@ -1,5 +1,7 @@
 import asyncio
 from decimal import Decimal
+from app.telegram.output import send_message
+from app.telegram import templates
 
 
 class HedgeReentryManager:
@@ -33,6 +35,10 @@ class HedgeReentryManager:
 
                 if change >= self.sl_pct:
                     print(f"⚠️ Hedge triggered at {last}, reversing position")
+                    try:
+                        await send_message(templates.hedge_triggered(self.symbol))
+                    except Exception:
+                        pass
                     await self._reverse_position(last, qty)
                     self.count += 1
                     # flip direction and reset entry

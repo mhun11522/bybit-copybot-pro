@@ -19,7 +19,7 @@ bybit-copybot-pro/
 │   └── __init__.py
 ├── tests/
 ├── requirements.txt
-├── .env.example
+├── .env
 ├── README.md
 ```
 

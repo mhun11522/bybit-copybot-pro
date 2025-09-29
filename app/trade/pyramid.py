@@ -1,4 +1,7 @@
 from decimal import Decimal, ROUND_UP
+import asyncio
+from app.telegram.output import send_message
+from app.telegram import templates
 
 
 class PyramidManager:
@@ -80,6 +83,12 @@ class PyramidManager:
             if isinstance(resp, dict) and resp.get("retCode") == 0:
                 self.count += 1
                 print(f"✅ Pyramid add {self.count} placed at {price_d} qty {qty_str}")
+                # Notify (fire-and-forget)
+                try:
+                    loop = asyncio.get_event_loop()
+                    loop.create_task(send_message(templates.pyramid_added(self.symbol, str(price_d), qty_str)))
+                except Exception:
+                    pass
                 return resp
             # Retry: bump qty up (double for faster convergence) if min notional error persists
             if isinstance(resp, dict) and resp.get("retCode") == 110094 and attempts < 4:
