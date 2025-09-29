@@ -4,6 +4,9 @@ from decimal import Decimal, ROUND_UP
 from enum import Enum, auto
 from app.bybit_client import BybitClient
 from app.trade.oco import OCOManager
+from app.trade.pyramid import PyramidManager
+from app.trade.trailing import TrailingStopManager
+from app.trade.hedge import HedgeReentryManager
 
 
 class TradeState(Enum):
@@ -60,6 +63,9 @@ class TradeFSM:
         qty_step = Decimal(str(lot.get("qtyStep", "0.001")))
         min_qty = Decimal(str(lot.get("minOrderQty", "0.001")))
         min_notional = Decimal(str(lot.get("minNotionalValue", "5")))
+        # Enforce at least 20 USDT notional per order
+        if min_notional < Decimal("20"):
+            min_notional = Decimal("20")
         tick_size = Decimal(str(pricef.get("tickSize", "0.10")))
 
         def round_up_to_step(value: Decimal, step: Decimal) -> Decimal:
@@ -124,6 +130,26 @@ class TradeFSM:
                         print("✅ Position confirmed")
                         self.state = TradeState.POSITION_CONFIRMED
                         self.position_size = pos["size"]
+                        # Initialize pyramid manager for subsequent adds
+                        self.pyramid = PyramidManager(
+                            self.bybit,
+                            self.trade_id,
+                            self.signal["symbol"],
+                            self.signal["direction"],
+                            self.signal["leverage"],
+                        )
+                        # Start hedge/re-entry monitor in background
+                        try:
+                            self.hedge = HedgeReentryManager(
+                                self.bybit,
+                                self.trade_id,
+                                self.signal["symbol"],
+                                self.signal["direction"],
+                                self.signal["leverage"],
+                            )
+                            asyncio.create_task(self.hedge.monitor(entry_price=self.signal["entries"][0], qty="0.001"))
+                        except Exception as e:
+                            print("Hedge initialization error:", e)
                         return
             await asyncio.sleep(3)
         raise Exception("No position found after waiting")
@@ -164,3 +190,16 @@ class TradeFSM:
         oco = OCOManager(self.bybit, self.signal, self.trade_id)
         result = await oco.monitor()
         print("OCO result:", result)
+
+        # Start trailing stop in background (non-blocking)
+        try:
+            self.trailing = TrailingStopManager(
+                self.bybit,
+                self.trade_id,
+                self.signal["symbol"],
+                self.signal["direction"],
+                self.signal.get("sl"),
+            )
+            asyncio.create_task(self.trailing.monitor(entry_price=self.signal["entries"][0], qty=qty))
+        except Exception as e:
+            print("Trailing initialization error:", e)
