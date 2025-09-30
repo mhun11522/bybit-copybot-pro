@@ -13,9 +13,12 @@ from app.bybit_client import BybitClient
 
 if sys.platform.startswith("win"):
     try:
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     except Exception:
-        pass
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
 
 async def main():
     print("🚀 Starting Bybit Copybot Pro...")
@@ -42,9 +45,25 @@ async def main():
 
     if telegram_ready:
         print("🔌 Telegram credentials detected. Connecting...")
-        await client.start()
-        print("✅ Connected to Telegram. Waiting for messages…")
-        log_system_event("TELEGRAM_CONNECTED", {})
+        try:
+            # Use a simpler connection approach
+            print("   Connecting to Telegram...")
+            await client.connect()
+            
+            if not await client.is_user_authorized():
+                print("❌ User not authorized. Please run telegram_auth.py first.")
+                print("🔄 Continuing in offline mode...")
+                telegram_ready = False
+                log_system_event("TELEGRAM_NOT_AUTHORIZED", {})
+            else:
+                print("✅ Connected to Telegram. Waiting for messages…")
+                log_system_event("TELEGRAM_CONNECTED", {})
+                
+        except Exception as e:
+            print(f"❌ Telegram connection error: {e}")
+            print("🔄 Continuing in offline mode...")
+            telegram_ready = False
+            log_system_event("TELEGRAM_CONNECTION_ERROR", {"error": str(e)})
     else:
         print("⚠️ TELEGRAM_API_ID/HASH not set. Running in offline mode (no Telegram connection).")
         log_system_event("TELEGRAM_OFFLINE_MODE", {})
@@ -63,14 +82,25 @@ async def main():
     print("📊 Reporting scheduler started.")
     log_system_event("REPORTING_STARTED", {})
 
-    if telegram_ready:
+    if telegram_ready and client.is_connected():
         print("✅ Bot + reporting running... (waiting for Telegram messages)")
         log_system_event("BOT_RUNNING", {"mode": "telegram"})
-        await client.run_until_disconnected()
+        try:
+            await client.run_until_disconnected()
+        except Exception as e:
+            print(f"❌ Telegram connection lost: {e}")
+            log_system_event("TELEGRAM_DISCONNECTED", {"error": str(e)})
     else:
-        print("✅ Bot running in offline mode. Press Ctrl+C to exit.")
-        log_system_event("BOT_RUNNING", {"mode": "offline"})
+        if telegram_ready:
+            print("⚠️ Telegram connection failed. Running in offline mode.")
+            print("💡 To fix: Run 'python telegram_auth.py' to authenticate")
+            log_system_event("BOT_RUNNING", {"mode": "offline_fallback"})
+        else:
+            print("✅ Bot running in offline mode. Press Ctrl+C to exit.")
+            log_system_event("BOT_RUNNING", {"mode": "offline"})
+        
         # Keep the process alive so scheduler continues to run
+        print("🔄 Bot will continue running in offline mode...")
         while True:
             await asyncio.sleep(3600)
 

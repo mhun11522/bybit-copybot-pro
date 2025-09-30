@@ -120,11 +120,28 @@ def _extract_symbol(text: str) -> Optional[str]:
     if m:
         return m.group(1).replace(".P", "USDT")
     
+    # Format 8: JUP/USD format - "#JUP/USD" (convert to JUPUSDT)
+    m = re.search(r"#([A-Z0-9]+)/(USD|USDT)", text)
+    if m:
+        return f"{m.group(1)}USDT"
+    
     return None
 
 
 def _extract_direction(text: str) -> Optional[str]:
     """Extract direction from various formats."""
+    
+    # JUP signal format - "💎 BUY #JUP/USD" (check first)
+    if "💎 BUY" in text or "BUY #" in text:
+        return "BUY"
+    elif "💎 SELL" in text or "SELL #" in text:
+        return "SELL"
+    
+    # Check for BUY/SELL with # (more specific)
+    if re.search(r"BUY\s*#", text):
+        return "BUY"
+    elif re.search(r"SELL\s*#", text):
+        return "SELL"
     
     # Swedish formats
     if any(word in text for word in ["LÅNG", "LONG", "🟢", "🔴 Long"]):
@@ -132,10 +149,10 @@ def _extract_direction(text: str) -> Optional[str]:
     elif any(word in text for word in ["SHORT", "🔵 Opening SHORT", "🔴 Short"]):
         return "SELL"
     
-    # Check for explicit LONG/SHORT
-    if "LONG" in text:
+    # Check for explicit LONG/SHORT (but not in context like "SHORT/MID TERM")
+    if "LONG" in text and not re.search(r"SHORT/MID|MID.*TERM", text):
         return "BUY"
-    elif "SHORT" in text:
+    elif "SHORT" in text and not re.search(r"SHORT/MID|MID.*TERM", text):
         return "SELL"
     
     return None
@@ -205,6 +222,12 @@ def _extract_entries(text: str) -> List[Decimal]:
             entry_parts = [x for x in entry_str.split() if x]
             entries = [Decimal(x) for x in entry_parts if x]
     
+    # Format 8: JUP signal - "🛒 Entry Zone: 0.41464960 - 0.43034368"
+    elif re.search(r"ENTRY\s*ZONE:\s*([\d\.]+)\s*[-–]\s*([\d\.]+)", text):
+        m = re.search(r"ENTRY\s*ZONE:\s*([\d\.]+)\s*[-–]\s*([\d\.]+)", text)
+        if m:
+            entries = [Decimal(m.group(1)), Decimal(m.group(2))]
+    
     return entries
 
 
@@ -243,6 +266,11 @@ def _extract_targets(text: str) -> List[Decimal]:
             target_parts = [x for x in target_str.split("-") if x]
             targets = [Decimal(x) for x in target_parts if x]
     
+    # Format 6: JUP signal - "🎯 Target 1: 0.44423680 (4.06%)"
+    elif re.search(r"TARGET\s*\d+:\s*([\d\.]+)", text):
+        target_matches = re.findall(r"TARGET\s*\d+:\s*([\d\.]+)", text)
+        targets = [Decimal(x) for x in target_matches]
+    
     return targets
 
 
@@ -271,6 +299,11 @@ def _extract_stop_loss(text: str) -> Optional[Decimal]:
     
     # Format 5: Bitcoin Bullets - "SL: 7.072"
     m = re.search(r"SL:\s*([\d\.]+)", text)
+    if m:
+        return Decimal(m.group(1))
+    
+    # Format 6: JUP signal - "🚫 Stop loss: 0.40993280 (3.98%)"
+    m = re.search(r"STOP\s*LOSS:\s*([\d\.]+)", text)
     if m:
         return Decimal(m.group(1))
     
