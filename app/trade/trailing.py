@@ -1,145 +1,146 @@
-from __future__ import annotations
+"""Trailing Stop Manager with +6.1% trigger and 2.5% band."""
+
 import asyncio
 from decimal import Decimal
-from app.bybit_client import BybitClient
+from app.bybit.client import BybitClient
+from app.core.precision import q_price, q_qty
 from app.telegram.output import send_message
-from app.telegram import templates
-from app.core.precision import q_price
-from app import settings
-
+from app.config.settings import CATEGORY
 
 class TrailingStopManager:
-    def __init__(self, bybit_client: BybitClient, trade_id: str, symbol: str, direction: str, 
-                 sl_price, activation_pct: Decimal = None, distance_pct: Decimal = None):
-        self.bybit = bybit_client
+    """Manages trailing stops with +6.1% trigger and 2.5% band."""
+    
+    def __init__(self, trade_id, symbol, direction, avg_entry, position_size, channel_name):
         self.trade_id = trade_id
         self.symbol = symbol
-        self.direction = direction  # "BUY" or "SELL"
-        self.initial_sl = Decimal(str(sl_price)) if sl_price is not None else None
-        self.activation_pct = activation_pct or settings.TRAILING_ACTIVATION_PCT  # +6.1%
-        self.distance_pct = distance_pct or settings.TRAILING_DISTANCE_PCT  # 2.5%
-        self.active = False
-        self.last_sl = self.initial_sl
-        self.highest_price = None
-        self.tps_cancelled = False
+        self.direction = direction
+        self.avg_entry = Decimal(str(avg_entry))
+        self.position_size = Decimal(str(position_size))
+        self.channel_name = channel_name
+        self.bybit = BybitClient()
+        self._running = False
+        self.trailing_active = False
+        self.highest_price = self.avg_entry
 
-    async def monitor(self, entry_price: Decimal, qty: str):
-        """Monitor for trailing stop opportunities."""
-        side = "Sell" if self.direction == "BUY" else "Buy"
-        print(f"📈 Starting trailing stop manager for {self.symbol}...")
-
-        entry_d = Decimal(str(entry_price))
-        self.highest_price = entry_d
-
-        for _ in range(100):  # ~8 minutes depending on sleep
-            try:
-                ticker = await asyncio.to_thread(self.bybit.get_ticker, self.symbol) or {}
-                last_price_str = ((ticker.get("result", {}).get("list") or [{}])[0].get("lastPrice"))
-                if not last_price_str:
-                    await asyncio.sleep(5)
-                    continue
-                last = Decimal(str(last_price_str))
-
-                # Update highest price for trailing
-                if self.direction == "BUY":
-                    if self.highest_price is None or last > self.highest_price:
-                        self.highest_price = last
-                else:
-                    if self.highest_price is None or last < self.highest_price:
-                        self.highest_price = last
-
-                # Calculate gain percentage relative to entry
-                if self.direction == "BUY":
-                    change = (last - entry_d) / entry_d
-                else:
-                    change = (entry_d - last) / entry_d
-
-                # Check if trailing should be activated (+6.1%)
-                if change >= self.activation_pct and not self.active:
-                    await self._activate_trailing(last, side, qty)
-                    self.active = True
-
-                # If trailing is active, update SL based on highest price
-                if self.active:
-                    await self._update_trailing_sl(last, side, qty)
-
-                await asyncio.sleep(5)
-            except Exception as e:
-                print("Trailing stop error:", e)
-                await asyncio.sleep(5)
-
-    async def _activate_trailing(self, current_price: Decimal, side: str, qty: str):
-        """Activate trailing stop and cancel TPs."""
-        print(f"🔄 Activating trailing stop for {self.symbol} at {current_price}")
+    async def run(self):
+        """Run trailing stop monitoring."""
+        self._running = True
+        print(f"🔄 Trailing Stop Manager started for {self.symbol}")
         
-        # Cancel all TP orders when trailing activates
-        if not self.tps_cancelled:
+        while self._running:
             try:
-                await asyncio.to_thread(self.bybit.cancel_all, self.symbol)
-                self.tps_cancelled = True
-                print(f"✅ Cancelled all orders for {self.symbol}")
+                # Get current mark price
+                mark_price = await self._get_mark_price()
+                if not mark_price:
+                    await asyncio.sleep(3)
+                    continue
+                
+                # Check if we should activate trailing
+                if not self.trailing_active:
+                    gain_pct = self._calculate_gain(mark_price)
+                    if gain_pct >= Decimal("0.061"):  # +6.1%
+                        self.trailing_active = True
+                        await self._activate_trailing(mark_price)
+                
+                # Update trailing stop if active
+                if self.trailing_active:
+                    await self._update_trailing_stop(mark_price)
+                    
             except Exception as e:
-                print(f"Error cancelling orders: {e}")
+                print(f"❌ Trailing stop error for {self.symbol}: {e}")
+            
+            await asyncio.sleep(3)
 
-        # Send activation message
+    async def _get_mark_price(self):
+        """Get current mark price."""
         try:
-            await send_message(templates.trailing_activated(
-                self.symbol,
-                self.direction,
-                f"TRD-{self.symbol}",
-                self.activation_pct,
-                self.distance_pct,
-                current_price
-            ))
+            positions = await self.bybit.positions(CATEGORY, self.symbol)
+            if positions.get("result", {}).get("list"):
+                return Decimal(str(positions["result"]["list"][0].get("markPrice", "0")))
+        except Exception:
+            pass
+        return None
+
+    def _calculate_gain(self, current_price):
+        """Calculate gain percentage."""
+        if self.direction == "BUY":
+            return (current_price - self.avg_entry) / self.avg_entry
+        else:
+            return (self.avg_entry - current_price) / self.avg_entry
+
+    async def _activate_trailing(self, current_price):
+        """Activate trailing stop at +6.1%."""
+        try:
+            # Calculate initial trailing SL (2.5% band from current price)
+            if self.direction == "BUY":
+                trailing_sl = current_price * Decimal("0.975")  # 2.5% below current
+            else:
+                trailing_sl = current_price * Decimal("1.025")  # 2.5% above current
+            
+            # Quantize and place trailing SL
+            sl_q = await q_price(CATEGORY, self.symbol, trailing_sl)
+            size_q = await q_qty(CATEGORY, self.symbol, self.position_size)
+            
+            # Cancel existing SL and place trailing SL
+            await self.bybit.cancel_all(CATEGORY, self.symbol)
+            
+            exit_side = "Sell" if self.direction == "BUY" else "Buy"
+            await self.bybit.sl_market_reduceonly_mark(
+                CATEGORY, self.symbol, exit_side, str(size_q), str(sl_q),
+                f"{self.trade_id}-SL-TRAIL"
+            )
+            
+            self.highest_price = current_price
+            
+            await send_message(
+                f"⛳ Trailing stop activated at +6.1% for {self.symbol} (SL: {sl_q}) • Source: {self.channel_name}"
+            )
+            
         except Exception as e:
-            print(f"Trailing activation message error: {e}")
+            print(f"❌ Failed to activate trailing stop for {self.symbol}: {e}")
 
-    async def _update_trailing_sl(self, current_price: Decimal, side: str, qty: str):
-        """Update trailing stop loss based on highest price."""
-        if self.highest_price is None:
-            return
-
-        # Calculate new SL based on distance behind highest price
-        if self.direction == "BUY":
-            new_sl_raw = self.highest_price * (Decimal("1") - self.distance_pct)
-        else:
-            new_sl_raw = self.highest_price * (Decimal("1") + self.distance_pct)
-
-        new_sl = await q_price(self.symbol, new_sl_raw)
-
-        # Only move SL in favorable direction
-        should_move = False
-        if self.direction == "BUY":
-            if self.last_sl is None or new_sl > self.last_sl:
-                should_move = True
-        else:
-            if self.last_sl is None or new_sl < self.last_sl:
-                should_move = True
-
-        if should_move:
-            try:
-                print(f"🔄 Moving trailing SL to {new_sl} (highest: {self.highest_price})")
-                await asyncio.to_thread(
-                    self.bybit.create_sl_order,
-                    symbol=self.symbol,
-                    side=side,
-                    qty=qty,
-                    trigger_price=str(new_sl),
-                    trade_id=f"{self.trade_id}-TRL",
+    async def _update_trailing_stop(self, current_price):
+        """Update trailing stop with 2.5% band."""
+        try:
+            # Update highest price for long positions
+            if self.direction == "BUY" and current_price > self.highest_price:
+                self.highest_price = current_price
+                
+                # Calculate new trailing SL (2.5% below highest)
+                new_sl = self.highest_price * Decimal("0.975")
+                sl_q = await q_price(CATEGORY, self.symbol, new_sl)
+                size_q = await q_qty(CATEGORY, self.symbol, self.position_size)
+                
+                # Update SL
+                await self.bybit.cancel_all(CATEGORY, self.symbol)
+                
+                exit_side = "Sell" if self.direction == "BUY" else "Buy"
+                await self.bybit.sl_market_reduceonly_mark(
+                    CATEGORY, self.symbol, exit_side, str(size_q), str(sl_q),
+                    f"{self.trade_id}-SL-TRAIL"
                 )
-                self.last_sl = new_sl
-            except Exception as e:
-                print(f"Trailing SL update error: {e}")
-
-
-# Legacy function for backward compatibility
-async def trailing_moved(symbol: str, price: str) -> str:
-    """Legacy trailing moved message."""
-    return f"""🔄 TRAILING STOP FLYTTAD
-📊 Symbol: {symbol}
-📍 Pris: {price}
-
-🔄 TRAILING STOP MOVED
-📊 Symbol: {symbol}
-�� Price: {price}"""
-
+                
+                print(f"⛳ Trailing stop updated for {self.symbol}: {sl_q}")
+            
+            # Update lowest price for short positions
+            elif self.direction == "SELL" and current_price < self.highest_price:
+                self.highest_price = current_price
+                
+                # Calculate new trailing SL (2.5% above lowest)
+                new_sl = self.highest_price * Decimal("1.025")
+                sl_q = await q_price(CATEGORY, self.symbol, new_sl)
+                size_q = await q_qty(CATEGORY, self.symbol, self.position_size)
+                
+                # Update SL
+                await self.bybit.cancel_all(CATEGORY, self.symbol)
+                
+                exit_side = "Sell" if self.direction == "BUY" else "Buy"
+                await self.bybit.sl_market_reduceonly_mark(
+                    CATEGORY, self.symbol, exit_side, str(size_q), str(sl_q),
+                    f"{self.trade_id}-SL-TRAIL"
+                )
+                
+                print(f"⛳ Trailing stop updated for {self.symbol}: {sl_q}")
+                
+        except Exception as e:
+            print(f"❌ Failed to update trailing stop for {self.symbol}: {e}")

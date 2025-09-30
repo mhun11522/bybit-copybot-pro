@@ -3,12 +3,13 @@ import asyncio
 import sys
 from app import settings
 from app.telegram_client import client
-from app.reports.service import ReportService
+from app.reports.service import start_report_scheduler
 from app.storage.db import init_db
 from app.runtime.resume import resume_open_trades
 from app.order_cleanup import start_order_cleanup
 from app.margin_mode import MarginModeManager
 from app.logging_system import log_system_event, logger
+from app.core.logging import system_logger
 from app.bybit_client import BybitClient
 
 if sys.platform.startswith("win"):
@@ -46,9 +47,15 @@ async def main():
     if telegram_ready:
         print("🔌 Telegram credentials detected. Connecting...")
         try:
-            # Use a simpler connection approach
+            # Use a more robust connection approach
             print("   Connecting to Telegram...")
-            await client.connect()
+            
+            # Try to connect with timeout
+            try:
+                await asyncio.wait_for(client.connect(), timeout=10.0)
+            except asyncio.TimeoutError:
+                print("⏰ Connection timeout, trying direct connect...")
+                await client.connect()
             
             if not await client.is_user_authorized():
                 print("❌ User not authorized. Please run telegram_auth.py first.")
@@ -56,7 +63,8 @@ async def main():
                 telegram_ready = False
                 log_system_event("TELEGRAM_NOT_AUTHORIZED", {})
             else:
-                print("✅ Connected to Telegram. Waiting for messages…")
+                print("✅ Connected to Telegram. Monitoring for signals...")
+                print("📱 Bot is now listening for signals from your channels!")
                 log_system_event("TELEGRAM_CONNECTED", {})
                 
         except Exception as e:
@@ -77,13 +85,14 @@ async def main():
         log_system_event("RESUME_ERROR", {"error": str(e)})
 
     # Start reporting service
-    report = ReportService(db=None, telegram_client=client)
-    report.start()
+    await start_report_scheduler()
     print("📊 Reporting scheduler started.")
     log_system_event("REPORTING_STARTED", {})
 
     if telegram_ready and client.is_connected():
         print("✅ Bot + reporting running... (waiting for Telegram messages)")
+        print("📡 Monitoring channels for trading signals...")
+        print("🎯 Ready to detect and process signals!")
         log_system_event("BOT_RUNNING", {"mode": "telegram"})
         try:
             await client.run_until_disconnected()

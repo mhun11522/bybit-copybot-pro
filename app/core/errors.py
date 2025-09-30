@@ -1,61 +1,66 @@
+"""Error handling with circuit breaker and retry logic."""
+
 import functools
 import asyncio
-from app.telegram.output import send_message
-from app.core.retcodes import MAP, TRANSIENT
 import time
+import traceback
+from app.core.retcodes import MAP, TRANSIENT
 
-# Simple in-memory circuit breaker per step
-_FAIL_COUNTS: dict[str, int] = {}
-_BREAKER_UNTIL: dict[str, float] = {}
+_BREAKER = {"open": False, "until": 0.0, "fail_count": 0}
+_PAUSE_S = 120
+_MAX_FAILS = 3
 
+def _extract_retcode(exc: Exception):
+    """Extract Bybit retCode from exception message."""
+    s = str(exc)
+    for tok in s.replace(",", " ").replace(":", " ").split():
+        if tok.isdigit():
+            try:
+                return int(tok)
+            except:
+                pass
+    return None
 
-def safe_step(step_name: str, max_retries: int = 3, breaker_threshold: int = 3, breaker_cooldown_sec: int = 120):
-    def decorator(func):
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            # Check breaker
-            now = time.time()
-            unblock_ts = _BREAKER_UNTIL.get(step_name)
-            if unblock_ts and now < unblock_ts:
-                try:
-                    await send_message(f"⛔ Pausad steg • {step_name}\n⛔ Circuit breaker open • {step_name}")
-                except Exception:
-                    pass
-                raise RuntimeError(f"circuit_breaker_open {step_name}")
-            delay = 1
-            for attempt in range(1, max_retries + 1):
-                try:
-                    result = await func(*args, **kwargs)
-                    # Reset failure count on success
-                    _FAIL_COUNTS.pop(step_name, None)
-                    return result
-                except Exception as e:
-                    # Try to extract numeric code from exception text
-                    code = None
-                    for token in str(e).split():
-                        if token.isdigit():
-                            code = int(token)
-                            break
-                    human = MAP.get(code, f"❌ Okänt fel / Unknown error in {step_name}")
-                    try:
-                        await send_message(f"{human} (försök {attempt})")
-                    except Exception:
-                        pass
-                    if code in TRANSIENT and attempt < max_retries:
+def safe_step(step_name: str):
+    """Decorator for safe execution with circuit breaker and retry."""
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrap(*a, **kw):
+            if _BREAKER["open"] and time.time() < _BREAKER["until"]:
+                print("⛔ Paus aktiverad / Trading paused (circuit breaker)")
+                raise RuntimeError("Circuit breaker open")
+            
+            try:
+                return await fn(*a, **kw)
+            except Exception as e:
+                code = _extract_retcode(e)
+                print(MAP.get(code, f"❌ Okänt fel / Unknown error in {step_name}"))
+                
+                if code in TRANSIENT:
+                    # Retry transient errors with exponential backoff
+                    delay = 1.0
+                    for _ in range(2):
                         await asyncio.sleep(delay)
-                        delay *= 2
-                        continue
-                    # Hard failure reached; update breaker counts
-                    _FAIL_COUNTS[step_name] = _FAIL_COUNTS.get(step_name, 0) + 1
-                    if _FAIL_COUNTS[step_name] >= breaker_threshold:
-                        _BREAKER_UNTIL[step_name] = time.time() + breaker_cooldown_sec
                         try:
-                            await send_message(
-                                f"⛔ Avbrott aktiverat • {step_name}\n⛔ Circuit breaker tripped • {step_name}"
-                            )
+                            return await fn(*a, **kw)
                         except Exception:
-                            pass
-                    raise
-        return wrapper
-    return decorator
+                            delay *= 2
+                
+                _BREAKER["fail_count"] += 1
+                if _BREAKER["fail_count"] >= _MAX_FAILS:
+                    _BREAKER["open"] = True
+                    _BREAKER["until"] = time.time() + _PAUSE_S
+                    _BREAKER["fail_count"] = 0
+                    print("⛔ Trading pausad i 2 min / Trading paused for 2 minutes")
+                
+                traceback.print_exc()
+                raise
+        return wrap
+    return deco
 
+def breaker_reset():
+    """Reset circuit breaker if time has passed."""
+    if _BREAKER["open"] and time.time() >= _BREAKER["until"]:
+        _BREAKER["open"] = False
+    if _BREAKER["fail_count"] > 0:
+        _BREAKER["fail_count"] -= 1
