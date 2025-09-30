@@ -1,24 +1,69 @@
-"""Advanced Trade FSM with all client requirements."""
-
-import asyncio
 from decimal import Decimal
+import asyncio
+import sqlite3
+from app.config.settings import CATEGORY, MAX_CONCURRENT_TRADES
 from app.bybit.client import BybitClient
-from app.core.errors import safe_step
 from app.core.precision import q_price, q_qty, ensure_min_notional
-from app.trade.risk import qty_for_2pct_risk
+from app.core.errors import safe_step, breaker_reset
 from app.trade.planner import plan_dual_entries
+from app.trade.risk import qty_for_2pct_risk
+from app.telegram.templates import leverage_set, entries_placed, position_confirmed, tpsl_placed
+from app.telegram.output import send_message
+
 from app.trade.oco import OCOManager
 from app.trade.trailing import TrailingStopManager
 from app.trade.hedge import HedgeReentryManager
 from app.trade.pyramid import PyramidManager
-from app.telegram.templates import signal_received, leverage_set, entries_placed, position_confirmed, tpsl_placed
-from app.config.settings import CATEGORY, MAX_CONCURRENT_TRADES
-from app.signals.idempotency import register_trade, close_trade, get_active_trades
-from app.core.logging import trade_logger
+from app.trade.tp2_be import TP2BreakEvenManager
+
+DB_PATH = "trades.sqlite"
+
+async def _active_trades() -> int:
+    def _sync_operation():
+        with sqlite3.connect(DB_PATH) as db:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS trades(
+                    trade_id TEXT PRIMARY KEY,
+                    symbol TEXT,
+                    direction TEXT,
+                    avg_entry REAL,
+                    position_size REAL,
+                    leverage REAL,
+                    channel_name TEXT,
+                    realized_pnl REAL DEFAULT 0,
+                    state TEXT
+                )
+            """)
+            cur = db.execute("SELECT COUNT(*) FROM trades WHERE state!='DONE'")
+            return cur.fetchone()[0] or 0
+    
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _sync_operation)
+
+async def _upsert_trade(trade_id, **fields):
+    keys = ["symbol","direction","avg_entry","position_size","leverage","channel_name","state"]
+    vals = [fields.get(k) for k in keys]
+    
+    def _sync_operation():
+        with sqlite3.connect(DB_PATH) as db:
+            db.execute("""
+                INSERT INTO trades(trade_id,symbol,direction,avg_entry,position_size,leverage,channel_name,state)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(trade_id) DO UPDATE SET
+                    symbol=excluded.symbol,
+                    direction=excluded.direction,
+                    avg_entry=excluded.avg_entry,
+                    position_size=excluded.position_size,
+                    leverage=excluded.leverage,
+                    channel_name=excluded.channel_name,
+                    state=excluded.state
+            """, (trade_id, *vals))
+            db.commit()
+    
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _sync_operation)
 
 class TradeFSM:
-    """Simplified Trade FSM for testing."""
-    
     def __init__(self, sig: dict):
         self.sig = sig
         self.bybit = BybitClient()
@@ -28,127 +73,103 @@ class TradeFSM:
 
     @safe_step("open_guard")
     async def open_guard(self):
-        """Check capacity limits."""
-        active_trades = await get_active_trades()
-        if active_trades >= MAX_CONCURRENT_TRADES:
-            trade_logger.warning(f"Capacity limit reached: {active_trades}/{MAX_CONCURRENT_TRADES}")
-            raise RuntimeError(f"Capacity limit reached: {active_trades}/{MAX_CONCURRENT_TRADES}")
-        
-        trade_logger.info(f"Capacity check passed: {active_trades}/{MAX_CONCURRENT_TRADES}")
+        if await _active_trades() >= MAX_CONCURRENT_TRADES:
+            await send_message(f"⛔ Kapacitetsgräns {MAX_CONCURRENT_TRADES} uppnådd / Capacity reached")
+            raise RuntimeError("capacity")
+        await _upsert_trade(self.trade_id,
+                            symbol=self.sig["symbol"],
+                            direction=self.sig["direction"],
+                            avg_entry=0,
+                            position_size=0,
+                            leverage=self.sig["leverage"],
+                            channel_name=self.sig["channel_name"],
+                            state="OPENING")
 
     @safe_step("set_leverage")
     async def set_leverage(self):
-        """Set leverage on Bybit."""
-        trade_logger.info(f"Setting leverage {self.sig['leverage']}x for {self.sig['symbol']}")
-        # Simulate leverage setting
-        await asyncio.sleep(0.1)
-        trade_logger.trade_event("LEVERAGE_SET", self.sig['symbol'], {
-            "leverage": self.sig['leverage'],
-            "mode": self.sig['mode']
-        })
+        r = await self.bybit.set_leverage(CATEGORY, self.sig["symbol"], self.sig["leverage"], self.sig["leverage"])
+        breaker_reset()
+        await send_message(leverage_set(self.sig["symbol"], self.sig["leverage"], self.sig["channel_name"]))
+        return r
 
     @safe_step("place_entries")
     async def place_entries(self):
-        """Place dual entry orders."""
+        side = "Buy" if self.sig["direction"] == "BUY" else "Sell"
         plan_entries, splits = plan_dual_entries(self.sig["direction"], self.sig["entries"])
-        trade_logger.info(f"Planning entries: {plan_entries} with splits: {splits}")
-        
-        # Register trade in database
-        await register_trade(
-            self.trade_id, 
-            self.sig['symbol'], 
-            self.sig['direction'], 
-            self.sig.get('channel_name', 'Unknown')
-        )
-        
-        # Simulate entry placement
-        await asyncio.sleep(0.1)
-        trade_logger.trade_event("ENTRIES_PLACED", self.sig['symbol'], {
-            "entries": plan_entries,
-            "splits": [str(s) for s in splits]
-        })
+        base_qty = await qty_for_2pct_risk(CATEGORY, self.sig["symbol"], plan_entries[0], self.sig["sl"])
+        if base_qty <= 0:
+            raise Exception("2% risk produced non-positive qty")
+
+        for i, (e_raw, frac) in enumerate(zip(plan_entries, splits), start=1):
+            price_q = await q_price(CATEGORY, self.sig["symbol"], e_raw)
+            qty_q   = await ensure_min_notional(CATEGORY, self.sig["symbol"], price_q, (base_qty * frac))
+            await self.bybit.entry_limit_postonly(
+                CATEGORY, self.sig["symbol"], side,
+                str(qty_q), str(price_q), f"{self.trade_id}-E{i}"
+            )
+        breaker_reset()
+        await send_message(entries_placed(self.sig["symbol"], plan_entries, self.trade_id, self.sig["channel_name"]))
 
     @safe_step("confirm_position")
     async def confirm_position(self):
-        """Confirm position was opened."""
-        self.position_size = Decimal("0.01")  # Simulate position
-        self.avg_entry = Decimal(self.sig["entries"][0])
-        
-        trade_logger.position_opened(
-            self.sig['symbol'],
-            self.sig['direction'],
-            str(self.position_size),
-            str(self.avg_entry),
-            self.sig['leverage']
-        )
+        # Poll Bybit for a filled position
+        for _ in range(60):
+            pos = await self.bybit.positions(CATEGORY, self.sig["symbol"])
+            try:
+                row = pos["result"]["list"][0]
+                size = Decimal(str(row.get("size") or "0"))
+                if size > 0:
+                    self.position_size = size
+                    self.avg_entry = Decimal(str(row.get("avgPrice") or self.sig["entries"][0]))
+                    await _upsert_trade(self.trade_id,
+                                        symbol=self.sig["symbol"],
+                                        direction=self.sig["direction"],
+                                        avg_entry=float(self.avg_entry),
+                                        position_size=float(self.position_size),
+                                        leverage=self.sig["leverage"],
+                                        channel_name=self.sig["channel_name"],
+                                        state="OPEN")
+                    breaker_reset()
+                    await send_message(position_confirmed(self.sig["symbol"], self.position_size, self.avg_entry, self.sig["channel_name"]))
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+        raise Exception("Position not confirmed")
 
     @safe_step("place_tpsl")
     async def place_tpsl(self):
-        """Place TP/SL orders."""
-        trade_logger.info(f"Placing TP/SL: TP={self.sig['tps']}, SL={self.sig['sl']}")
-        # Simulate TP/SL placement
-        await asyncio.sleep(0.1)
-        trade_logger.trade_event("TPSL_PLACED", self.sig['symbol'], {
-            "tps": self.sig['tps'],
-            "sl": self.sig['sl']
-        })
+        exit_side = "Sell" if self.sig["direction"] == "BUY" else "Buy"
+        splits = [Decimal("0.5"), Decimal("0.3"), Decimal("0.2")][:len(self.sig["tps"])]
+
+        for i, (tp_raw, frac) in enumerate(zip(self.sig["tps"], splits), start=1):
+            p = await q_price(CATEGORY, self.sig["symbol"], tp_raw)
+            q = await q_qty(CATEGORY, self.sig["symbol"], self.position_size * frac)
+            q = await ensure_min_notional(CATEGORY, self.sig["symbol"], p, q)
+            await self.bybit.tp_limit_reduceonly(CATEGORY, self.sig["symbol"], exit_side, str(q), str(p), f"{self.trade_id}-TP{i}")
+
+        sl = await q_price(CATEGORY, self.sig["symbol"], self.sig["sl"])
+        full_q = await q_qty(CATEGORY, self.sig["symbol"], self.position_size)
+        await self.bybit.sl_market_reduceonly_mark(CATEGORY, self.sig["symbol"], exit_side, str(full_q), str(sl), f"{self.trade_id}-SL")
+        breaker_reset()
+        await send_message(tpsl_placed(self.sig["symbol"], self.sig["tps"], self.sig["sl"], self.sig["channel_name"]))
 
     async def run(self):
-        """Run the complete FSM with advanced features."""
-        try:
-            print(f"🚦 Starting FSM for {self.sig['symbol']} {self.sig['direction']} from {self.sig.get('channel_name', 'Unknown')}")
-            
-            await self.open_guard()
-            await self.set_leverage()
-            await self.place_entries()
-            await self.confirm_position()
-            await self.place_tpsl()
-            
-            # Start advanced trading managers
-            await self._start_managers()
-            
-            print(f"✅ FSM completed for {self.sig['symbol']}")
-            
-        except Exception as e:
-            print(f"❌ FSM failed for {self.sig['symbol']}: {e}")
-            raise
+        await self.open_guard()
+        await self.set_leverage()
+        await self.place_entries()
+        await self.confirm_position()
+        await self.place_tpsl()
 
-    async def _start_managers(self):
-        """Start all advanced trading managers."""
-        try:
-            # OCO Manager (TP2 break-even rule)
-            oco = OCOManager(
-                self.trade_id, self.sig['symbol'], self.sig['direction'], 
-                self.sig.get('channel_name', 'Unknown')
-            )
-            
-            # Trailing Stop Manager (+6.1% trigger, 2.5% band)
-            trailing = TrailingStopManager(
-                self.trade_id, self.sig['symbol'], self.sig['direction'],
-                self.avg_entry, self.position_size, self.sig.get('channel_name', 'Unknown')
-            )
-            
-            # Hedge/Re-entry Manager (-2% trigger, up to 3 re-entries)
-            hedge = HedgeReentryManager(
-                self.trade_id, self.sig['symbol'], self.sig['direction'],
-                self.avg_entry, self.position_size, self.sig['leverage'],
-                self.sig.get('channel_name', 'Unknown')
-            )
-            
-            # Pyramid Manager (IM steps, thresholds)
-            pyramid = PyramidManager(
-                self.trade_id, self.sig['symbol'], self.sig['direction'],
-                self.sig['leverage'], self.sig.get('channel_name', 'Unknown'),
-                planned_entries=self.sig.get('entries', [])[1:]  # Skip first entry
-            )
-            
-            # Start all managers as background tasks
-            asyncio.create_task(oco.run())
-            asyncio.create_task(trailing.run())
-            asyncio.create_task(hedge.run())
-            asyncio.create_task(pyramid.run())
-            
-            print(f"🔄 Advanced managers started for {self.sig['symbol']}")
-            
-        except Exception as e:
-            print(f"❌ Failed to start managers for {self.sig['symbol']}: {e}")
+        # Start controllers (background best-effort)
+        oco = OCOManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.sig["channel_name"])
+        trail = TrailingStopManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.avg_entry, self.position_size, self.sig["channel_name"])
+        hedge = HedgeReentryManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.avg_entry, self.position_size, self.sig["leverage"], self.sig["channel_name"])
+        pyramid = PyramidManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.sig["leverage"], self.sig["channel_name"], planned_entries=self.sig.get("entries", [])[1:])
+        tp2be = TP2BreakEvenManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.avg_entry, self.sig["channel_name"])
+
+        asyncio.create_task(oco.run())
+        asyncio.create_task(trail.run())
+        asyncio.create_task(hedge.run())
+        asyncio.create_task(pyramid.run())
+        asyncio.create_task(tp2be.run())

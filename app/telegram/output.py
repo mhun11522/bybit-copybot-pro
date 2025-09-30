@@ -1,5 +1,5 @@
-"""Telegram output functions."""
+TARGET_CHAT_ID = None  # set to an ops/chat ID if you want duplicates there
 
-def send_message(text: str):
-    """Send message (simplified for testing)."""
-    print(f"📱 TELEGRAM: {text}")
+async def send_message(text: str):
+    print(text)
+    # Note: TARGET_CHAT_ID functionality can be added later to avoid circular imports

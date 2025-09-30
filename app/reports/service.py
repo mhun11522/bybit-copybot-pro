@@ -1,7 +1,7 @@
 """Reporting service with Stockholm timezone scheduling."""
 
 import asyncio
-import aiosqlite
+import sqlite3
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from app.config.settings import TIMEZONE
@@ -12,103 +12,111 @@ TZ = ZoneInfo(TIMEZONE)
 
 async def _get_trade_summary():
     """Get trade summary for reports."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        # Create tables if not exist
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS trades(
-                trade_id TEXT PRIMARY KEY,
-                symbol TEXT,
-                direction TEXT,
-                channel_name TEXT,
-                leverage REAL,
-                mode TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                closed_at DATETIME,
-                status TEXT DEFAULT 'ACTIVE',
-                realized_pnl REAL DEFAULT 0,
-                max_pyramid_step INTEGER DEFAULT 0,
-                reentry_count INTEGER DEFAULT 0,
-                hedge_count INTEGER DEFAULT 0
-            )
-        """)
-        
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS daily_stats(
-                date TEXT PRIMARY KEY,
-                total_trades INTEGER DEFAULT 0,
-                winning_trades INTEGER DEFAULT 0,
-                losing_trades INTEGER DEFAULT 0,
-                realized_pnl REAL DEFAULT 0,
-                total_reentries INTEGER DEFAULT 0,
-                total_hedges INTEGER DEFAULT 0,
-                max_pyramid_step INTEGER DEFAULT 0
-            )
-        """)
-        
-        await db.commit()
-        
-        # Get today's stats
-        today = datetime.now(TZ).strftime("%Y-%m-%d")
-        
-        # Get completed trades for today
-        async with db.execute("""
-            SELECT 
-                COUNT(*) as total_trades,
-                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
-                SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
-                COALESCE(SUM(realized_pnl), 0) as realized_pnl,
-                SUM(reentry_count) as total_reentries,
-                SUM(hedge_count) as total_hedges,
-                MAX(max_pyramid_step) as max_pyramid_step
-            FROM trades 
-            WHERE DATE(closed_at) = ? AND status = 'CLOSED'
-        """, (today,)) as cur:
-            row = await cur.fetchone()
+    def _sync_operation():
+        with sqlite3.connect(DB_PATH) as db:
+            # Create tables if not exist
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS trades(
+                    trade_id TEXT PRIMARY KEY,
+                    symbol TEXT,
+                    direction TEXT,
+                    channel_name TEXT,
+                    leverage REAL,
+                    mode TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    closed_at DATETIME,
+                    status TEXT DEFAULT 'ACTIVE',
+                    realized_pnl REAL DEFAULT 0,
+                    max_pyramid_step INTEGER DEFAULT 0,
+                    reentry_count INTEGER DEFAULT 0,
+                    hedge_count INTEGER DEFAULT 0
+                )
+            """)
             
-        return {
-            "total_trades": row[0] or 0,
-            "winning_trades": row[1] or 0,
-            "losing_trades": row[2] or 0,
-            "realized_pnl": row[3] or 0.0,
-            "total_reentries": row[4] or 0,
-            "total_hedges": row[5] or 0,
-            "max_pyramid_step": row[6] or 0
-        }
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS daily_stats(
+                    date TEXT PRIMARY KEY,
+                    total_trades INTEGER DEFAULT 0,
+                    winning_trades INTEGER DEFAULT 0,
+                    losing_trades INTEGER DEFAULT 0,
+                    realized_pnl REAL DEFAULT 0,
+                    total_reentries INTEGER DEFAULT 0,
+                    total_hedges INTEGER DEFAULT 0,
+                    max_pyramid_step INTEGER DEFAULT 0
+                )
+            """)
+            
+            db.commit()
+            
+            # Get today's stats
+            today = datetime.now(TZ).strftime("%Y-%m-%d")
+            
+            # Get completed trades for today
+            cur = db.execute("""
+                SELECT 
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                    SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+                    COALESCE(SUM(realized_pnl), 0) as realized_pnl,
+                    SUM(reentry_count) as total_reentries,
+                    SUM(hedge_count) as total_hedges,
+                    MAX(max_pyramid_step) as max_pyramid_step
+                FROM trades 
+                WHERE DATE(closed_at) = ? AND status = 'CLOSED'
+            """, (today,))
+            row = cur.fetchone()
+            
+            return {
+                "total_trades": row[0] or 0,
+                "winning_trades": row[1] or 0,
+                "losing_trades": row[2] or 0,
+                "realized_pnl": row[3] or 0.0,
+                "total_reentries": row[4] or 0,
+                "total_hedges": row[5] or 0,
+                "max_pyramid_step": row[6] or 0
+            }
+    
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _sync_operation)
 
 async def _get_weekly_summary():
     """Get weekly trade summary."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        # Get this week's stats (Monday to Sunday)
-        now = datetime.now(TZ)
-        week_start = now - timedelta(days=now.weekday())
-        week_start_str = week_start.strftime("%Y-%m-%d")
-        week_end_str = (week_start + timedelta(days=6)).strftime("%Y-%m-%d")
-        
-        async with db.execute("""
-            SELECT 
-                COUNT(*) as total_trades,
-                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
-                SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
-                COALESCE(SUM(realized_pnl), 0) as realized_pnl,
-                SUM(reentry_count) as total_reentries,
-                SUM(hedge_count) as total_hedges,
-                MAX(max_pyramid_step) as max_pyramid_step
-            FROM trades 
-            WHERE DATE(closed_at) BETWEEN ? AND ? AND status = 'CLOSED'
-        """, (week_start_str, week_end_str)) as cur:
-            row = await cur.fetchone()
+    def _sync_operation():
+        with sqlite3.connect(DB_PATH) as db:
+            # Get this week's stats (Monday to Sunday)
+            now = datetime.now(TZ)
+            week_start = now - timedelta(days=now.weekday())
+            week_start_str = week_start.strftime("%Y-%m-%d")
+            week_end_str = (week_start + timedelta(days=6)).strftime("%Y-%m-%d")
             
-        return {
-            "total_trades": row[0] or 0,
-            "winning_trades": row[1] or 0,
-            "losing_trades": row[2] or 0,
-            "realized_pnl": row[3] or 0.0,
-            "total_reentries": row[4] or 0,
-            "total_hedges": row[5] or 0,
-            "max_pyramid_step": row[6] or 0,
-            "week_start": week_start_str,
-            "week_end": week_end_str
-        }
+            cur = db.execute("""
+                SELECT 
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                    SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+                    COALESCE(SUM(realized_pnl), 0) as realized_pnl,
+                    SUM(reentry_count) as total_reentries,
+                    SUM(hedge_count) as total_hedges,
+                    MAX(max_pyramid_step) as max_pyramid_step
+                FROM trades 
+                WHERE DATE(closed_at) BETWEEN ? AND ? AND status = 'CLOSED'
+            """, (week_start_str, week_end_str))
+            row = cur.fetchone()
+            
+            return {
+                "total_trades": row[0] or 0,
+                "winning_trades": row[1] or 0,
+                "losing_trades": row[2] or 0,
+                "realized_pnl": row[3] or 0.0,
+                "total_reentries": row[4] or 0,
+                "total_hedges": row[5] or 0,
+                "max_pyramid_step": row[6] or 0,
+                "week_start": week_start_str,
+                "week_end": week_end_str
+            }
+    
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _sync_operation)
 
 async def send_daily_report():
     """Send daily report at 22:00 Stockholm time."""

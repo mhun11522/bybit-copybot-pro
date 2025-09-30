@@ -1,16 +1,7 @@
-from app.core import decimal_ctx  # set global Decimal precision early
 import asyncio
-import sys
-from app import settings
-from app.telegram_client import client
+from app.telegram.client import start_telegram
 from app.reports.service import start_report_scheduler
-from app.storage.db import init_db
 from app.runtime.resume import resume_open_trades
-from app.order_cleanup import start_order_cleanup
-from app.margin_mode import MarginModeManager
-from app.logging_system import log_system_event, logger
-from app.core.logging import system_logger
-from app.bybit_client import BybitClient
 
 if sys.platform.startswith("win"):
     try:
