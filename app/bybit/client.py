@@ -19,6 +19,11 @@ def _check_response(response: dict) -> dict:
     if ret_code == 110043:
         return response
     ret_msg = response.get("retMsg", "Unknown error")
+    
+    # Special handling for timestamp errors
+    if ret_code == 10002:
+        raise BybitAPIError(ret_code, f"Timestamp sync error: {ret_msg}. Check system clock or increase recv_window.", response.get("result"))
+    
     raise BybitAPIError(ret_code, ret_msg, response.get("result"))
 
 def _ts() -> str:
@@ -50,36 +55,42 @@ class BybitClient:
 
     async def wallet_balance(self, coin="USDT"):
         body = {"accountType":"UNIFIED","coin":coin}
-        r = await self.http.post("/v5/account/wallet-balance", headers=_headers(body), content=json.dumps(body))
+        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        r = await self.http.post("/v5/account/wallet-balance", headers=_headers(body), content=body_str)
         r.raise_for_status()
         return _check_response(r.json())
 
     async def set_leverage(self, category, symbol, buy_leverage, sell_leverage):
         body = {"category":category,"symbol":symbol,"buyLeverage":str(buy_leverage),"sellLeverage":str(sell_leverage)}
-        r = await self.http.post("/v5/position/set-leverage", headers=_headers(body), content=json.dumps(body))
+        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        r = await self.http.post("/v5/position/set-leverage", headers=_headers(body), content=body_str)
         r.raise_for_status()
         return _check_response(r.json())
 
     async def place_order(self, body: Dict[str, Any]):
-        r = await self.http.post("/v5/order/create", headers=_headers(body), content=json.dumps(body))
+        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        r = await self.http.post("/v5/order/create", headers=_headers(body), content=body_str)
         r.raise_for_status()
         return _check_response(r.json())
 
     async def cancel_all(self, category, symbol):
         body = {"category":category,"symbol":symbol}
-        r = await self.http.post("/v5/order/cancel-all", headers=_headers(body), content=json.dumps(body))
+        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        r = await self.http.post("/v5/order/cancel-all", headers=_headers(body), content=body_str)
         r.raise_for_status()
         return _check_response(r.json())
 
     async def query_open(self, category, symbol):
         body = {"category":category,"symbol":symbol,"openOnly":1}
-        r = await self.http.post("/v5/order/realtime", headers=_headers(body), content=json.dumps(body))
+        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        r = await self.http.post("/v5/order/realtime", headers=_headers(body), content=body_str)
         r.raise_for_status()
         return _check_response(r.json())
 
     async def positions(self, category, symbol):
         body = {"category":category,"symbol":symbol}
-        r = await self.http.post("/v5/position/list", headers=_headers(body), content=json.dumps(body))
+        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        r = await self.http.post("/v5/position/list", headers=_headers(body), content=body_str)
         r.raise_for_status()
         return _check_response(r.json())
 
@@ -114,6 +125,7 @@ class BybitClient:
             "slTriggerBy": sl_trigger_by,
             "positionIdx": 0
         }
-        r = await self.http.post("/v5/position/trading-stop", headers=_headers(body), content=json.dumps(body))
+        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        r = await self.http.post("/v5/position/trading-stop", headers=_headers(body), content=body_str)
         r.raise_for_status()
         return _check_response(r.json())

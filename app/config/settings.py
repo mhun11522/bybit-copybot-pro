@@ -25,7 +25,7 @@ TELEGRAM_API_HASH= os.getenv("TELEGRAM_API_HASH", "")
 BYBIT_ENDPOINT   = os.getenv("BYBIT_ENDPOINT", "https://api-testnet.bybit.com")
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
-BYBIT_RECV_WINDOW= os.getenv("BYBIT_RECV_WINDOW", "5000")
+BYBIT_RECV_WINDOW= os.getenv("BYBIT_RECV_WINDOW", "30000")
 
 TELEGRAM_SESSION = os.getenv("TELEGRAM_SESSION", "bybit_copybot_session")
 TELEGRAM_API_ID  = int(os.getenv("TELEGRAM_API_ID", "0"))
