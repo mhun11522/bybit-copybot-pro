@@ -99,7 +99,10 @@ class PyramidManager:
             return resp
 
     def _calc_qty(self, price):
+        # Compute quantity from IM step and leverage, quantized by instrument step
+        from app.core.precision import q_qty
         price_d = Decimal(str(price))
-        # qty = IM * leverage / price, rounded to 0.001
+        if price_d == 0:
+            return Decimal("0")
         raw = (self.step_im * self.leverage) / price_d
-        return raw.quantize(Decimal("0.001"))
+        return q_qty(self.symbol, raw)

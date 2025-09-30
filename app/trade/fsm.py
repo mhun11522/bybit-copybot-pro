@@ -112,13 +112,18 @@ class TradeFSM:
             else:
                 planned_entries = [base, base * Decimal("1.001")]  # 0.1% above
 
-        # When SL is present and we have 2 entries, size 2% risk total and split 50/50
+        # Enforce 2% risk sizing when SL is present.
+        # If two entries, split equally; else use full risk sizing for the single entry.
         per_entry_qty_override = None
-        if self.signal.get("sl") and len(planned_entries) == 2:
+        if self.signal.get("sl"):
             price_for_risk = q_price(self.signal["symbol"], live_price if live_price else Decimal(str(planned_entries[0])))
             total_qty = qty_for_2pct_risk(self.signal["symbol"], price_for_risk, self.signal["sl"]) or Decimal("0")
-            per_entry_qty_override = (total_qty / Decimal("2")) if total_qty > 0 else None
+            if len(planned_entries) == 2 and total_qty > 0:
+                per_entry_qty_override = (total_qty / Decimal("2"))
+            elif len(planned_entries) == 1:
+                per_entry_qty_override = total_qty
 
+        confirmed_link_ids: list[str] = []
         for i, entry in enumerate(planned_entries, start=1):
             raw_price = live_price if live_price else Decimal(str(entry))
             price = q_price(self.signal["symbol"], raw_price)
@@ -152,6 +157,9 @@ class TradeFSM:
                         order_id = resp.get("result", {}).get("orderId", "")
                         link_id = resp.get("result", {}).get("orderLinkId", f"{self.trade_id}-E{i}")
                         await save_order(order_id, self.trade_id, link_id, "ENTRY_LIMIT", float(str(price)), float(str(qty)), "New")
+                        # ACK: wait until order visible by link id
+                        await self._wait_order_visible(link_id)
+                        confirmed_link_ids.append(link_id)
                     except Exception:
                         pass
                     break
@@ -161,24 +169,26 @@ class TradeFSM:
                     attempts += 1
                     continue
                 raise Exception(f"Entry {i} failed: {resp}")
-        # verify open orders
+        # Verify open orders overall (debug log)
         check = await asyncio.to_thread(self.bybit.get_open_orders, self.signal["symbol"])
         print("Open orders check:", check)
         self.state = TradeState.ENTRIES_PLACED
         try:
+            # Persist without hardcoded size; use 0.0 until confirmed
             await save_trade(
                 self.trade_id,
                 self.signal["symbol"],
                 self.signal["direction"],
                 float(str(self.signal["entries"][0])),
-                0.001,
+                0.0,
                 "ENTRIES_PLACED",
             )
         except Exception:
             pass
-        # Notify entries placed (collect link IDs that succeeded)
+        # Notify entries placed with confirmed link ids only
         try:
-            await send_message(templates.entries_placed(self.signal["symbol"], [f"{self.trade_id}-E1", f"{self.trade_id}-E2"]))
+            if confirmed_link_ids:
+                await send_message(templates.entries_placed(self.signal["symbol"], confirmed_link_ids))
         except Exception:
             pass
 
@@ -334,9 +344,22 @@ class TradeFSM:
             )
         except Exception:
             pass
-        # Notify TP/SL placed
+        # Notify TP/SL placed only after verification
         try:
-            await send_message(templates.tpsl_placed(self.signal["symbol"], len(tps), str(self.signal.get("sl"))))
+            tp_links = [f"{self.trade_id}-TP{i}" for i in range(1, len(tps) + 1)]
+            sl_link = f"{self.trade_id}-SL" if self.signal.get("sl") else None
+            confirmed = 0
+            for lid in tp_links:
+                ok = await self._wait_order_visible(lid)
+                confirmed += 1 if ok else 0
+            if sl_link:
+                ok = await self._wait_order_visible(sl_link)
+                # do not increment; message shows counts based on config, but only send if all visible
+                all_ok = (confirmed == len(tp_links)) and ok
+            else:
+                all_ok = (confirmed == len(tp_links))
+            if all_ok:
+                await send_message(templates.tpsl_placed(self.signal["symbol"], len(tps), str(self.signal.get("sl"))))
         except Exception:
             pass
 
@@ -392,7 +415,7 @@ class TradeFSM:
         except Exception as e:
             print("record_exit error:", e)
 
-    async def _wait_order_visible(self, order_link_id: str, retries: int = 5, delay_sec: float = 0.5) -> None:
+    async def _wait_order_visible(self, order_link_id: str, retries: int = 5, delay_sec: float = 0.5) -> bool:
         symbol = self.signal["symbol"]
         for _ in range(retries):
             try:
@@ -400,8 +423,9 @@ class TradeFSM:
                 if isinstance(resp, dict) and resp.get("retCode") == 0:
                     order_list = resp.get("result", {}).get("list", [])
                     if any((o.get("orderLinkId") == order_link_id) for o in order_list):
-                        return
+                        return True
             except Exception:
                 pass
             await asyncio.sleep(delay_sec)
-        # If not visible, we still continue, but we've attempted an ACK confirmation
+        # If not visible, we still continue, but report not confirmed
+        return False

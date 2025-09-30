@@ -19,7 +19,6 @@ async def handler(event):
     # Allow-list filter: if not configured, ignore all intake to be safe
     try:
         if not settings.ALLOWED_CHANNEL_IDS:
-            # No allow-list configured; ignore all messages
             return
         if int(event.chat_id) not in settings.ALLOWED_CHANNEL_IDS:
             return

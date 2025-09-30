@@ -3,6 +3,7 @@ import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.storage.db import aiosqlite, DB_PATH
 from app.telegram.templates import daily_report, weekly_report
+from app.telegram.output import send_message
 
 
 class ReportService:
@@ -20,15 +21,15 @@ class ReportService:
 
     async def daily_report(self):
         text = await self._build_report_text(label="Morning")
-        await self.tg.send_message(text)
+        await send_message(text)
 
     async def daily_summary(self):
         text = await self._build_report_text(label="Evening")
-        await self.tg.send_message(text)
+        await send_message(text)
 
     async def weekly_report(self):
         text = await self._build_report_text(label="Weekly")
-        await self.tg.send_message(text)
+        await send_message(text)
 
     async def _build_report_text(self, label: str) -> str:
         now = datetime.datetime.now(self.tz)

@@ -128,7 +128,7 @@ class BybitClient:
         params = {"category": "linear", "symbol": symbol}
         return self._get("/v5/market/tickers", params, auth=False)
 
-    def create_order(self, symbol: str = "BTCUSDT", side: str = "Buy", qty: str = "0.001", price: str = "20000"):
+    def create_order(self, symbol: str = "BTCUSDT", side: str = "Buy", qty: str = "", price: str = "20000"):
         body = {
             "category": "linear",
             "symbol": symbol,
@@ -141,6 +141,14 @@ class BybitClient:
             "positionIdx": 0,
         }
         return self._post("/v5/order/create", body)
+
+    # Wallet balance for risk sizing
+    def get_wallet_balance(self, coin: str = "USDT"):
+        params = {
+            "accountType": "UNIFIED",
+            "coin": coin,
+        }
+        return self._get("/v5/account/wallet-balance", params, auth=True)
 
     # New real endpoints for FSM
     def set_leverage(self, symbol: str, buy_leverage: int = 10, sell_leverage: int = 10):
