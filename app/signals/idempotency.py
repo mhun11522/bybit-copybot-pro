@@ -1,6 +1,5 @@
 import hashlib
-import aiosqlite
-from app.storage.db import DB_PATH
+from app.storage.db import DB_PATH, aiosqlite
 
 
 def sig_hash(text: str) -> str:

@@ -25,13 +25,41 @@ except Exception:  # Fallback shim when aiosqlite isn't installable
                 pass
             return False
 
+    class _ExecuteShim:
+        def __init__(self, conn: sqlite3.Connection, sql: str, params: tuple):
+            self._conn = conn
+            self._sql = sql
+            self._params = params
+            self._cur: sqlite3.Cursor | None = None
+
+        async def _run(self) -> sqlite3.Cursor:
+            return await asyncio.to_thread(self._conn.execute, self._sql, self._params)
+
+        def __await__(self):
+            async def _await_impl():
+                # Execute statement; return a cursor shim for API parity, though callers usually ignore
+                cur = await self._run()
+                return _CursorShim(cur)
+            return _await_impl().__await__()
+
+        async def __aenter__(self):
+            self._cur = await self._run()
+            return _CursorShim(self._cur)
+
+        async def __aexit__(self, exc_type, exc, tb):
+            try:
+                if self._cur is not None:
+                    await asyncio.to_thread(self._cur.close)
+            except Exception:
+                pass
+            return False
+
     class _ConnShim:
         def __init__(self, path: str):
             self._conn = sqlite3.connect(path, check_same_thread=False)
 
-        async def execute(self, sql: str, params: tuple = ()):  # returns async cursor
-            cur = await asyncio.to_thread(self._conn.execute, sql, params)
-            return _CursorShim(cur)
+        def execute(self, sql: str, params: tuple = ()):  # returns awaitable and async-context-manager
+            return _ExecuteShim(self._conn, sql, params)
 
         async def commit(self):
             await asyncio.to_thread(self._conn.commit)
@@ -110,7 +138,7 @@ async def init_db():
         await db.commit()
 
 
-async def _migrate_trades_table(db: aiosqlite.Connection) -> None:
+async def _migrate_trades_table(db) -> None:
     try:
         cols = []
         async with db.execute("PRAGMA table_info(trades)") as cur:

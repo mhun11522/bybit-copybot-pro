@@ -141,5 +141,4 @@ async def trailing_moved(symbol: str, price: str) -> str:
 
 🔄 TRAILING STOP MOVED
 📊 Symbol: {symbol}
-�� Price: {price}"""
-
+�� Price: {price}""" 
