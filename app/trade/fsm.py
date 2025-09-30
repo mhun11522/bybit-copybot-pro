@@ -8,7 +8,7 @@ from app.trade.planner import plan_dual_entries
 from app.trade.risk import qty_for_2pct_risk
 from app.telegram.templates import leverage_set, entries_placed, position_confirmed, tpsl_placed
 from app.telegram.output import send_message
-from app.storage.db import init_db, get_trade, update_trade, close_trade
+from app.storage.db import init_db, get_trade, close_trade
 
 from app.trade.oco import OCOManager
 from app.trade.trailing import TrailingStopManager
@@ -128,8 +128,8 @@ class TradeFSM:
                     breaker_reset()
                     await send_message(position_confirmed(self.sig["symbol"], self.position_size, self.avg_entry, self.sig["channel_name"]))
                     return
-                        except Exception:
-                            pass
+            except Exception:
+                pass
             await asyncio.sleep(1)
         raise Exception("Position not confirmed")
 

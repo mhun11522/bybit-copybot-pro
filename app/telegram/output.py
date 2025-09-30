@@ -1,5 +1,4 @@
 import asyncio
-from app.telegram.client import client
 
 TARGET_CHAT_ID = None  # set to an ops/chat ID if you want duplicates there
 
@@ -9,6 +8,9 @@ async def send_message(text: str, target_chat_id: int = None):
     Otherwise, send to the source channel if available in context.
     """
     try:
+        # Import here to avoid circular import
+        from app.telegram.client import client
+        
         if target_chat_id:
             await client.send_message(target_chat_id, text)
         elif TARGET_CHAT_ID:

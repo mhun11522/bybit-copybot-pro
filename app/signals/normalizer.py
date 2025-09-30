@@ -87,7 +87,7 @@ def parse_signal(text: str):
             mode, lev = "FAST", int(round(f))
         else:
             # forbidden leverage gap (6, 7.5)
-    return None
+            return None
 
     # Set defaults if not specified
     if lev is None:

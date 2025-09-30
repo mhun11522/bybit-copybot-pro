@@ -1,4 +1,4 @@
-from app.bybit_client import BybitClient
+from app.bybit.client import BybitClient
 
 
 def test_bybit():

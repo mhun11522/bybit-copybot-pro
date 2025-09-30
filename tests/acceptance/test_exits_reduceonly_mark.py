@@ -1,5 +1,5 @@
 import pytest
-from app.bybit_client import BybitClient
+from app.bybit.client import BybitClient
 
 
 def test_tp_is_limit_reduceonly(monkeypatch):

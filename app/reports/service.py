@@ -58,11 +58,11 @@ async def _get_trade_summary():
                     SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
                     SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
                     COALESCE(SUM(realized_pnl), 0) as realized_pnl,
-                    SUM(reentry_count) as total_reentries,
-                    SUM(hedge_count) as total_hedges,
-                    MAX(max_pyramid_step) as max_pyramid_step
+                    SUM(COALESCE(reentry_count, 0)) as total_reentries,
+                    SUM(COALESCE(hedge_count, 0)) as total_hedges,
+                    MAX(COALESCE(max_pyramid_step, 0)) as max_pyramid_step
                 FROM trades 
-                WHERE DATE(closed_at) = ? AND status = 'CLOSED'
+                WHERE DATE(closed_at) = ? AND state = 'DONE'
             """, (today,))
             row = cur.fetchone()
             
@@ -95,11 +95,11 @@ async def _get_weekly_summary():
                     SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
                     SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
                     COALESCE(SUM(realized_pnl), 0) as realized_pnl,
-                    SUM(reentry_count) as total_reentries,
-                    SUM(hedge_count) as total_hedges,
-                    MAX(max_pyramid_step) as max_pyramid_step
+                    SUM(COALESCE(reentry_count, 0)) as total_reentries,
+                    SUM(COALESCE(hedge_count, 0)) as total_hedges,
+                    MAX(COALESCE(max_pyramid_step, 0)) as max_pyramid_step
                 FROM trades 
-                WHERE DATE(closed_at) BETWEEN ? AND ? AND status = 'CLOSED'
+                WHERE DATE(closed_at) BETWEEN ? AND ? AND state = 'DONE'
             """, (week_start_str, week_end_str))
             row = cur.fetchone()
             

@@ -41,7 +41,7 @@ async def _inc_count(trade_id: str, inc: int=1)->int:
         new_val = current + inc
         if row:
             db.execute("UPDATE pyramid_state SET adds_count=? WHERE trade_id=?", (new_val, trade_id))
-                else:
+        else:
             db.execute("INSERT INTO pyramid_state(trade_id,adds_count) VALUES(?,?)", (trade_id, new_val))
         db.commit()
         return new_val

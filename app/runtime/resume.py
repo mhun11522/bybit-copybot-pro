@@ -16,7 +16,7 @@ async def resume_open_trades():
                     avg_entry REAL, position_size REAL, leverage REAL,
                     channel_name TEXT, realized_pnl REAL DEFAULT 0, state TEXT
                 )""")
-                cur = db.execute("SELECT trade_id,symbol,direction,avg_entry,position_size,leverage,channel_name FROM trades WHERE state!='DONE'")
+                cur = db.execute("SELECT trade_id,symbol,direction,avg_entry,position_size,leverage,channel_name FROM trades WHERE state='OPEN'")
                 return cur.fetchall()
         
         loop = asyncio.get_event_loop()

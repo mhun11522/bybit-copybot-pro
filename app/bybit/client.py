@@ -13,10 +13,13 @@ class BybitAPIError(Exception):
 def _check_response(response: dict) -> dict:
     """Check Bybit response for retCode and raise exception if not 0"""
     ret_code = response.get("retCode", 0)
-    if ret_code != 0:
-        ret_msg = response.get("retMsg", "Unknown error")
-        raise BybitAPIError(ret_code, ret_msg, response.get("result"))
-    return response
+    if ret_code == 0:
+        return response
+    # Treat "leverage not modified" as benign
+    if ret_code == 110043:
+        return response
+    ret_msg = response.get("retMsg", "Unknown error")
+    raise BybitAPIError(ret_code, ret_msg, response.get("result"))
 
 def _ts() -> str:
     return str(int(time.time() * 1000))

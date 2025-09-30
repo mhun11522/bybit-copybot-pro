@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from app.bybit_client import BybitClient
+from app.bybit.client import BybitClient
 
 
 def test_entry_orders_are_limit_postonly_reduceonly_false(monkeypatch):

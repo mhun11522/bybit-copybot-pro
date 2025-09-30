@@ -1,3 +1,10 @@
+"""
+High-performance version of main.py with winloop support for Windows.
+Use this if you want maximum performance on Windows.
+
+Install requirements: pip install -r requirements-performance.txt
+"""
+
 import asyncio
 import sys
 import signal
@@ -6,22 +13,32 @@ from app.telegram.client import start_telegram
 from app.reports.service import start_report_scheduler
 from app.runtime.resume import resume_open_trades
 
-# Windows asyncio configuration for Python 3.10+
+# High-performance asyncio configuration
 if sys.platform.startswith("win"):
-    # Use ProactorEventLoop for better performance and subprocess support
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        # Try to use winloop for maximum performance (5x faster than default)
+        import winloop
+        winloop.install()
+        print("🚀 Using winloop for maximum performance")
+    except ImportError:
+        # Fallback to ProactorEventLoop
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        print("📊 Using ProactorEventLoop (install winloop for better performance)")
     
     # Suppress asyncio warnings that are common on Windows
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="asyncio")
     
-    # Configure asyncio for better Windows performance
-    if hasattr(asyncio, 'WindowsProactorEventLoopPolicy'):
-        # Ensure we're using the most recent policy
-        policy = asyncio.WindowsProactorEventLoopPolicy()
-        asyncio.set_event_loop_policy(policy)
+elif sys.platform.startswith(("linux", "darwin")):
+    try:
+        # Use uvloop on Unix systems for better performance
+        import uvloop
+        uvloop.install()
+        print("🚀 Using uvloop for maximum performance")
+    except ImportError:
+        print("📊 Using default event loop (install uvloop for better performance)")
 
 async def main():
-    print("🚀 Starting Bybit Copybot Pro...")
+    print("🚀 Starting Bybit Copybot Pro (Performance Mode)...")
     print(f"🐍 Python {sys.version}")
     print(f"🪟 Platform: {sys.platform}")
     
@@ -76,4 +93,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Fatal error: {e}")
         sys.exit(1)
-
