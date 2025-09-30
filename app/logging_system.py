@@ -165,4 +165,9 @@ def log_error(trade_id: str, symbol: str, error_type: str, error_message: str,
             "context": context or {}
         },
         "ERROR"
-    ) 
+    )
+
+# Convenience function for system events
+def log_system_event(event_type: str, data: Dict[str, Any], level: str = "INFO"):
+    """Log a system event."""
+    logger.log_system_event(event_type, data, level) 

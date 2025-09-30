@@ -40,7 +40,7 @@ class BybitClient:
     def _post(self, path: str, body: dict):
         url = f"{self.endpoint}{path}"
         self._maybe_sync_time(force=True)
-        ts = int(self._epoch_ms() + self._time_offset_ms - 500)
+        ts = int(self._epoch_ms() + self._time_offset_ms)
         body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
         headers = {
             "X-BAPI-API-KEY": self.key,
@@ -64,7 +64,7 @@ class BybitClient:
                 return {"retCode": -1, "retMsg": "HTTP/JSON error", "error": str(e)}
         # Authenticated GET
         self._maybe_sync_time(force=True)
-        ts = int(self._epoch_ms() + self._time_offset_ms - 500)
+        ts = int(self._epoch_ms() + self._time_offset_ms)
         # Use sorted tuple list to preserve order
         params = params or {}
         items = sorted(params.items())
@@ -85,7 +85,7 @@ class BybitClient:
 
     def _maybe_sync_time(self, force: bool = False) -> None:
         now_ms = self._epoch_ms()
-        if not force and (now_ms - self._last_sync_epoch_ms) < 60_000:
+        if not force and (now_ms - self._last_sync_epoch_ms) < 30_000:  # Sync every 30 seconds instead of 60
             return
         try:
             resp = self.get_server_time()
@@ -100,9 +100,12 @@ class BybitClient:
                         server_ms = int(time_second) * 1000
                     else:
                         server_ms = now_ms
-                self._time_offset_ms = server_ms - now_ms
+                # Calculate offset and add small buffer to avoid timing issues
+                self._time_offset_ms = server_ms - now_ms + 1000  # Add 1 second buffer
                 self._last_sync_epoch_ms = now_ms
-        except Exception:
+                print(f"🕐 Time sync: offset={self._time_offset_ms}ms")
+        except Exception as e:
+            print(f"Time sync error: {e}")
             # If sync fails, keep previous offset
             pass
 

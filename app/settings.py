@@ -75,8 +75,8 @@ CHANNEL_ID_TO_NAME = {
     -1002308774475: "SRC_SCALPING_100",
     -1002655381894: "SRC_CRYPTO_SCALPING",
     -1001858531978: "SRC_HEMI_SIGNALS",
+    -1002951182684: "SRC_TEST_SIGNALS",
 }
-
 # Debug flag: when set to "1", intake prints and bypasses allow-list filter
 TELEGRAM_DEBUG = get_env("TELEGRAM_DEBUG", "0") == "1"
 
