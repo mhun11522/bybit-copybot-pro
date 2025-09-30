@@ -69,7 +69,7 @@ class TradeFSM:
             pass
         # Notify leverage set
         try:
-            await send_message(templates.leverage_set(self.signal["symbol"], lev))
+            await send_message(templates.leverage_set(self.signal["symbol"], lev, self.signal.get("source")))
         except Exception:
             pass
 
@@ -189,7 +189,7 @@ class TradeFSM:
         # Notify entries placed with confirmed link ids only
         try:
             if confirmed_link_ids:
-                await send_message(templates.entries_placed(self.signal["symbol"], confirmed_link_ids))
+                await send_message(templates.entries_placed(self.signal["symbol"], confirmed_link_ids, self.signal.get("source")))
         except Exception:
             pass
 
@@ -225,7 +225,7 @@ class TradeFSM:
                         # Notify position confirmed
                         try:
                             from decimal import Decimal as _D
-                            await send_message(templates.position_confirmed(self.signal["symbol"], _D(str(self.position_size)), _D(str(avg_entry)) if avg_entry else None))
+                            await send_message(templates.position_confirmed(self.signal["symbol"], _D(str(self.position_size)), _D(str(avg_entry)) if avg_entry else None, self.signal.get("source")))
                         except Exception:
                             pass
                         # Initialize pyramid manager for subsequent adds
@@ -360,7 +360,7 @@ class TradeFSM:
             else:
                 all_ok = (confirmed == len(tp_links))
             if all_ok:
-                await send_message(templates.tpsl_placed(self.signal["symbol"], len(tps), str(self.signal.get("sl"))))
+                await send_message(templates.tpsl_placed(self.signal["symbol"], len(tps), str(self.signal.get("sl")), self.signal.get("source")))
         except Exception:
             pass
 
@@ -408,9 +408,9 @@ class TradeFSM:
             # Notify exit
             try:
                 if (side or "").upper().startswith("TP"):
-                    await send_message(templates.tp_hit(self.signal["symbol"], str(exit_price)))
+                    await send_message(templates.tp_hit(self.signal["symbol"], str(exit_price), self.signal.get("source")))
                 else:
-                    await send_message(templates.sl_hit(self.signal["symbol"], str(exit_price)))
+                    await send_message(templates.sl_hit(self.signal["symbol"], str(exit_price), self.signal.get("source")))
             except Exception:
                 pass
         except Exception as e:

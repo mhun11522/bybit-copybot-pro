@@ -35,6 +35,14 @@ async def handler(event):
 
     # Parse → FSM
     sig = parse_signal(text)
+    # Attach source metadata for downstream templates
+    try:
+        chat = event.chat
+        channel_name = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
+    except Exception:
+        channel_name = str(event.chat_id)
+    sig["channel_id"] = int(event.chat_id)
+    sig["source"] = channel_name
     if not sig or not sig.get("symbol") or not sig.get("direction"):
         return
     fsm = TradeFSM(sig)

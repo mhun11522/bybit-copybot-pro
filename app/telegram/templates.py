@@ -2,47 +2,53 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-def leverage_set(symbol: str, lev: int) -> str:
+def leverage_set(symbol: str, lev: int, source: str | None = None) -> str:
+    src = f"\nKälla/Source: {source}" if source else ""
     return (
-        f"🔧 Hävstång satt • {symbol} • x{lev}\n"
-        f"🔧 Leverage set • {symbol} • x{lev}"
+        f"🔧 Hävstång satt • {symbol} • x{lev}{src}\n"
+        f"🔧 Leverage set • {symbol} • x{lev}{src}"
     )
 
 
-def entries_placed(symbol: str, order_ids: list[str]) -> str:
+def entries_placed(symbol: str, order_ids: list[str], source: str | None = None) -> str:
     ids = ", ".join(order_ids)
+    src = f"\nKälla/Source: {source}" if source else ""
     return (
-        f"📥 Order lagd • {symbol}\nOrder-ID: {ids}\n"
-        f"📥 Entry orders placed • {symbol}\nOrder IDs: {ids}"
+        f"📥 Order lagd • {symbol}{src}\nOrder-ID: {ids}\n"
+        f"📥 Entry orders placed • {symbol}{src}\nOrder IDs: {ids}"
     )
 
 
-def position_confirmed(symbol: str, size: Decimal, avg_entry: Decimal | None = None) -> str:
+def position_confirmed(symbol: str, size: Decimal, avg_entry: Decimal | None = None, source: str | None = None) -> str:
     avg_text = f"\nVWAP: {avg_entry}" if avg_entry is not None else ""
+    src = f"\nKälla/Source: {source}" if source else ""
     return (
-        f"✅ Position bekräftad • {symbol}\nStorlek: {size}{avg_text}\n"
-        f"✅ Position confirmed • {symbol}\nSize: {size}{avg_text}"
+        f"✅ Position bekräftad • {symbol}{src}\nStorlek: {size}{avg_text}\n"
+        f"✅ Position confirmed • {symbol}{src}\nSize: {size}{avg_text}"
     )
 
 
-def tpsl_placed(symbol: str, tp_count: int, sl_price: str) -> str:
+def tpsl_placed(symbol: str, tp_count: int, sl_price: str, source: str | None = None) -> str:
+    src = f"\nKälla/Source: {source}" if source else ""
     return (
-        f"🎯 TP/SL placerade • {symbol}\nTP: {tp_count} st • SL: {sl_price}\n"
-        f"🎯 TP & SL placed • {symbol}\nTP: {tp_count} • SL: {sl_price}"
+        f"🎯 TP/SL placerade • {symbol}{src}\nTP: {tp_count} st • SL: {sl_price}\n"
+        f"🎯 TP & SL placed • {symbol}{src}\nTP: {tp_count} • SL: {sl_price}"
     )
 
 
-def tp_hit(symbol: str, price: str) -> str:
+def tp_hit(symbol: str, price: str, source: str | None = None) -> str:
+    src = f"\nKälla/Source: {source}" if source else ""
     return (
-        f"🎯 TP träffad • {symbol}\nPris: {price}\n"
-        f"🎯 TP hit • {symbol}\nPrice: {price}"
+        f"🎯 TP träffad • {symbol}{src}\nPris: {price}\n"
+        f"🎯 TP hit • {symbol}{src}\nPrice: {price}"
     )
 
 
-def sl_hit(symbol: str, price: str) -> str:
+def sl_hit(symbol: str, price: str, source: str | None = None) -> str:
+    src = f"\nKälla/Source: {source}" if source else ""
     return (
-        f"🛑 SL träffad • {symbol}\nPris: {price}\n"
-        f"🛑 Stop-loss hit • {symbol}\nPrice: {price}"
+        f"🛑 SL träffad • {symbol}{src}\nPris: {price}\n"
+        f"🛑 Stop-loss hit • {symbol}{src}\nPrice: {price}"
     )
 
 
