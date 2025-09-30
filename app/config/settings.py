@@ -1,7 +1,11 @@
+# app/config/settings.py
+# Re-export existing settings and add missing constants
+
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
+# Re-export from app.settings
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Stockholm")
 
 BYBIT_ENDPOINT   = os.getenv("BYBIT_ENDPOINT", "https://api-testnet.bybit.com")

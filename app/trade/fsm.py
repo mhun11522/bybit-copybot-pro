@@ -87,9 +87,22 @@ class TradeFSM:
 
     @safe_step("set_leverage")
     async def set_leverage(self):
-        r = await self.bybit.set_leverage(CATEGORY, self.sig["symbol"], self.sig["leverage"], self.sig["leverage"])
+        # Validate leverage policy
+        lev = self.sig["leverage"]
+        mode = self.sig["mode"]
+        
+        if mode == "SWING" and lev != 6:
+            raise ValueError(f"SWING mode requires exactly 6x leverage, got {lev}")
+        elif mode == "DYNAMIC" and lev < 7.5:
+            raise ValueError(f"DYNAMIC mode requires ≥7.5x leverage, got {lev}")
+        elif mode == "FAST" and lev < 10:
+            raise ValueError(f"FAST mode requires ≥10x leverage, got {lev}")
+        elif 6 < lev < 7.5:
+            raise ValueError(f"Leverage {lev} is forbidden (must be 6, ≥7.5, or ≥10)")
+        
+        r = await self.bybit.set_leverage(CATEGORY, self.sig["symbol"], lev, lev)
         breaker_reset()
-        await send_message(leverage_set(self.sig["symbol"], self.sig["leverage"], self.sig["channel_name"]))
+        await send_message(leverage_set(self.sig["symbol"], lev, self.sig["channel_name"], mode))
         return r
 
     @safe_step("place_entries")

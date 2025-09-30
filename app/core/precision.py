@@ -1,20 +1,28 @@
 from decimal import Decimal
-from functools import lru_cache
 from app.bybit.client import BybitClient
 
 _client = BybitClient()
 
-@lru_cache(maxsize=512)
+# Manual async cache (lru_cache doesn't work on coroutines)
+_filters_cache = {}
+
 async def _filters(category: str, symbol: str):
     """
     Fetch tickSize, qtyStep, and minNotional from Bybit once and cache.
     """
+    key = (category, symbol)
+    if key in _filters_cache:
+        return _filters_cache[key]
+    
     data = await _client.instruments(category, symbol)
     item = data["result"]["list"][0]
     tick = Decimal(item["priceFilter"]["tickSize"])
     step = Decimal(item["lotSizeFilter"]["qtyStep"])
     min_notional = Decimal(item["lotSizeFilter"].get("minNotionalValue", "0"))
-    return tick, step, min_notional
+    
+    result = (tick, step, min_notional)
+    _filters_cache[key] = result
+    return result
 
 async def q_price(category, symbol, price):
     tick, _, _ = await _filters(category, symbol)
