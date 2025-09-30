@@ -17,9 +17,21 @@ TELEGRAM_SESSION = os.getenv("TELEGRAM_SESSION", "bybit_copybot_session")
 TELEGRAM_API_ID  = int(os.getenv("TELEGRAM_API_ID", "0"))
 TELEGRAM_API_HASH= os.getenv("TELEGRAM_API_HASH", "")
 
-# client requirement: exactly three whitelisted source *names* (not IDs!)
+# Multi-channel support: whitelisted source names and IDs
 SRC_CHANNEL_NAMES = [x.strip() for x in os.getenv("SRC_CHANNEL_NAMES", "").split(",") if x.strip()]
 ALLOWED_CHANNEL_IDS = [int(x) for x in os.getenv("TELEGRAM_ALLOWED_CHANNELS","").split(",") if x.strip()]
+
+# Channel ID to name mapping for templates
+CHANNEL_ID_NAME_MAP = {}
+channel_mapping_str = os.getenv("CHANNEL_ID_NAME_MAP", "")
+if channel_mapping_str:
+    for item in channel_mapping_str.split(","):
+        if ":" in item:
+            channel_id, channel_name = item.split(":", 1)
+            try:
+                CHANNEL_ID_NAME_MAP[int(channel_id.strip())] = channel_name.strip()
+            except ValueError:
+                pass
 
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.02"))
 MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "100"))

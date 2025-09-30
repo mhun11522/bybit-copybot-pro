@@ -13,19 +13,29 @@ client = TelegramClient(
 
 async def _allowed_by_name(event) -> tuple[bool, str]:
     """
-    Enforce allow-list by *channel name* (not ID), as per client requirement.
+    Enforce allow-list by channel ID and name mapping.
     Returns (allowed, resolved_name).
     """
-    if not settings.SRC_CHANNEL_NAMES:
-        # If empty, allow all (useful for debugging)
-        ent = await event.get_chat()
-        name = getattr(ent, "title", "") or getattr(ent, "username", "") or str(event.chat_id)
-        return True, name
-
     try:
         ent = await event.get_chat()
         name = getattr(ent, "title", "") or getattr(ent, "username", "") or str(event.chat_id)
-        return (name in settings.SRC_CHANNEL_NAMES), name
+        
+        # Check if channel ID is in allowed list
+        if settings.ALLOWED_CHANNEL_IDS and event.chat_id not in settings.ALLOWED_CHANNEL_IDS:
+            return False, name
+            
+        # If we have a mapping, use the mapped name, otherwise use the resolved name
+        if settings.CHANNEL_ID_NAME_MAP and event.chat_id in settings.CHANNEL_ID_NAME_MAP:
+            mapped_name = settings.CHANNEL_ID_NAME_MAP[event.chat_id]
+            return True, mapped_name
+            
+        # Fallback to name-based filtering if no ID mapping
+        if settings.SRC_CHANNEL_NAMES:
+            return (name in settings.SRC_CHANNEL_NAMES), name
+            
+        # If no filters configured, allow all
+        return True, name
+        
     except Exception:
         return False, "?"
 
@@ -78,13 +88,23 @@ async def start_telegram():
     print(f"🔑 API Hash: {'*' * len(settings.TELEGRAM_API_HASH) if settings.TELEGRAM_API_HASH else 'NOT SET'}")
     
     try:
+        print("🔄 Connecting to Telegram...")
         await client.start()
         print("✅ Telegram client started successfully!")
         print("📡 Listening for signals from whitelisted channels...")
+        print("🎯 Bot is ready! Send test signals to your channels.")
+        
+        # Keep the bot running
         await client.run_until_disconnected()
+        
     except Exception as e:
         print(f"❌ Telegram connection failed: {e}")
-        print("💡 Make sure to:")
-        print("   1. Create .env file with correct credentials")
-        print("   2. Run 'python telegram_auth.py' for first-time setup")
-        raise
+        print("💡 Troubleshooting:")
+        print("   1. Check if .env file has correct TELEGRAM_API_ID and TELEGRAM_API_HASH")
+        print("   2. Run 'python telegram_auth.py' for first-time authentication")
+        print("   3. Make sure you have internet connection")
+        print("   4. Check if Telegram API credentials are valid")
+        
+        # Don't raise the exception, just log it and continue
+        print("🔄 Continuing without Telegram connection...")
+        return

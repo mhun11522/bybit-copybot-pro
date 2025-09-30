@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
-from app.bybit_client import BybitClient
+from app.bybit.client import BybitClient
 from app.storage.db import aiosqlite, DB_PATH
 from app import settings
 
@@ -46,11 +46,7 @@ class OrderCleanupManager:
                     for order_id, symbol, order_link_id in old_orders:
                         try:
                             # Cancel order on Bybit
-                            await asyncio.to_thread(
-                                self.bybit.cancel_order,
-                                symbol=symbol,
-                                order_id=order_id
-                            )
+                            await self.bybit.cancel_all("linear", symbol)
                             
                             # Mark as deleted in database
                             await db.execute("""

@@ -1,6 +1,5 @@
 from decimal import Decimal
 import asyncio
-import sqlite3
 from app.config.settings import CATEGORY, MAX_CONCURRENT_TRADES
 from app.bybit.client import BybitClient
 from app.core.precision import q_price, q_qty, ensure_min_notional
@@ -9,6 +8,7 @@ from app.trade.planner import plan_dual_entries
 from app.trade.risk import qty_for_2pct_risk
 from app.telegram.templates import leverage_set, entries_placed, position_confirmed, tpsl_placed
 from app.telegram.output import send_message
+from app.storage.db import init_db, get_trade, update_trade, close_trade
 
 from app.trade.oco import OCOManager
 from app.trade.trailing import TrailingStopManager
@@ -16,52 +16,32 @@ from app.trade.hedge import HedgeReentryManager
 from app.trade.pyramid import PyramidManager
 from app.trade.tp2_be import TP2BreakEvenManager
 
-DB_PATH = "trades.sqlite"
-
 async def _active_trades() -> int:
-    def _sync_operation():
-        with sqlite3.connect(DB_PATH) as db:
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS trades(
-                    trade_id TEXT PRIMARY KEY,
-                    symbol TEXT,
-                    direction TEXT,
-                    avg_entry REAL,
-                    position_size REAL,
-                    leverage REAL,
-                    channel_name TEXT,
-                    realized_pnl REAL DEFAULT 0,
-                    state TEXT
-                )
-            """)
-            cur = db.execute("SELECT COUNT(*) FROM trades WHERE state!='DONE'")
-            return cur.fetchone()[0] or 0
-    
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _sync_operation)
+    """Count active trades using the unified database."""
+    from app.storage.db import aiosqlite, DB_PATH
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM trades WHERE state!='DONE'")
+        result = await cur.fetchone()
+        return result[0] or 0
 
 async def _upsert_trade(trade_id, **fields):
-    keys = ["symbol","direction","avg_entry","position_size","leverage","channel_name","state"]
-    vals = [fields.get(k) for k in keys]
-    
-    def _sync_operation():
-        with sqlite3.connect(DB_PATH) as db:
-            db.execute("""
-                INSERT INTO trades(trade_id,symbol,direction,avg_entry,position_size,leverage,channel_name,state)
-                VALUES(?,?,?,?,?,?,?,?)
-                ON CONFLICT(trade_id) DO UPDATE SET
-                    symbol=excluded.symbol,
-                    direction=excluded.direction,
-                    avg_entry=excluded.avg_entry,
-                    position_size=excluded.position_size,
-                    leverage=excluded.leverage,
-                    channel_name=excluded.channel_name,
-                    state=excluded.state
-            """, (trade_id, *vals))
-            db.commit()
-    
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _sync_operation)
+    """Upsert trade using the unified database."""
+    from app.storage.db import aiosqlite, DB_PATH
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO trades(trade_id,symbol,direction,avg_entry,position_size,leverage,channel_name,state)
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(trade_id) DO UPDATE SET
+                symbol=excluded.symbol,
+                direction=excluded.direction,
+                avg_entry=excluded.avg_entry,
+                position_size=excluded.position_size,
+                leverage=excluded.leverage,
+                channel_name=excluded.channel_name,
+                state=excluded.state
+        """, (trade_id, fields.get("symbol"), fields.get("direction"), fields.get("avg_entry"),
+              fields.get("position_size"), fields.get("leverage"), fields.get("channel_name"), fields.get("state")))
+        await db.commit()
 
 class TradeFSM:
     def __init__(self, sig: dict):
@@ -74,7 +54,8 @@ class TradeFSM:
     @safe_step("open_guard")
     async def open_guard(self):
         if await _active_trades() >= MAX_CONCURRENT_TRADES:
-            await send_message(f"⛔ Kapacitetsgräns {MAX_CONCURRENT_TRADES} uppnådd / Capacity reached")
+            await send_message(f"⛔ Kapacitetsgräns {MAX_CONCURRENT_TRADES} uppnådd / Capacity reached", 
+                             target_chat_id=self.sig.get("channel_id"))
             raise RuntimeError("capacity")
         await _upsert_trade(self.trade_id,
                             symbol=self.sig["symbol"],
@@ -102,7 +83,8 @@ class TradeFSM:
         
         r = await self.bybit.set_leverage(CATEGORY, self.sig["symbol"], lev, lev)
         breaker_reset()
-        await send_message(leverage_set(self.sig["symbol"], lev, self.sig["channel_name"], mode))
+        await send_message(leverage_set(self.sig["symbol"], lev, self.sig["channel_name"], mode), 
+                         target_chat_id=self.sig.get("channel_id"))
         return r
 
     @safe_step("place_entries")
@@ -121,7 +103,8 @@ class TradeFSM:
                 str(qty_q), str(price_q), f"{self.trade_id}-E{i}"
             )
         breaker_reset()
-        await send_message(entries_placed(self.sig["symbol"], plan_entries, self.trade_id, self.sig["channel_name"]))
+        await send_message(entries_placed(self.sig["symbol"], plan_entries, self.trade_id, self.sig["channel_name"]), 
+                         target_chat_id=self.sig.get("channel_id"))
 
     @safe_step("confirm_position")
     async def confirm_position(self):
@@ -145,8 +128,8 @@ class TradeFSM:
                     breaker_reset()
                     await send_message(position_confirmed(self.sig["symbol"], self.position_size, self.avg_entry, self.sig["channel_name"]))
                     return
-            except Exception:
-                pass
+                        except Exception:
+                            pass
             await asyncio.sleep(1)
         raise Exception("Position not confirmed")
 
@@ -165,7 +148,8 @@ class TradeFSM:
         full_q = await q_qty(CATEGORY, self.sig["symbol"], self.position_size)
         await self.bybit.sl_market_reduceonly_mark(CATEGORY, self.sig["symbol"], exit_side, str(full_q), str(sl), f"{self.trade_id}-SL")
         breaker_reset()
-        await send_message(tpsl_placed(self.sig["symbol"], self.sig["tps"], self.sig["sl"], self.sig["channel_name"]))
+        await send_message(tpsl_placed(self.sig["symbol"], self.sig["tps"], self.sig["sl"], self.sig["channel_name"]), 
+                         target_chat_id=self.sig.get("channel_id"))
 
     async def run(self):
         await self.open_guard()
@@ -175,7 +159,7 @@ class TradeFSM:
         await self.place_tpsl()
 
         # Start controllers (background best-effort)
-        oco = OCOManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.sig["channel_name"])
+        oco = OCOManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.sig["channel_name"], self.sig.get("channel_id"))
         trail = TrailingStopManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.avg_entry, self.position_size, self.sig["channel_name"])
         hedge = HedgeReentryManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.avg_entry, self.position_size, self.sig["leverage"], self.sig["channel_name"])
         pyramid = PyramidManager(self.trade_id, self.sig["symbol"], self.sig["direction"], self.sig["leverage"], self.sig["channel_name"], planned_entries=self.sig.get("entries", [])[1:])

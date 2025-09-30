@@ -2,6 +2,22 @@ import os, time, hmac, hashlib, json, httpx
 from typing import Any, Dict
 from app.config.settings import BYBIT_ENDPOINT, BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_RECV_WINDOW
 
+class BybitAPIError(Exception):
+    """Raised when Bybit API returns retCode != 0"""
+    def __init__(self, ret_code: int, ret_msg: str, result: Any = None):
+        self.ret_code = ret_code
+        self.ret_msg = ret_msg
+        self.result = result
+        super().__init__(f"Bybit API error {ret_code}: {ret_msg}")
+
+def _check_response(response: dict) -> dict:
+    """Check Bybit response for retCode and raise exception if not 0"""
+    ret_code = response.get("retCode", 0)
+    if ret_code != 0:
+        ret_msg = response.get("retMsg", "Unknown error")
+        raise BybitAPIError(ret_code, ret_msg, response.get("result"))
+    return response
+
 def _ts() -> str:
     return str(int(time.time() * 1000))
 
@@ -26,36 +42,43 @@ class BybitClient:
 
     async def instruments(self, category: str, symbol: str):
         r = await self.http.get("/v5/market/instruments-info", params={"category":category,"symbol":symbol})
-        r.raise_for_status(); return r.json()
+        r.raise_for_status()
+        return _check_response(r.json())
 
     async def wallet_balance(self, coin="USDT"):
         body = {"accountType":"UNIFIED","coin":coin}
         r = await self.http.post("/v5/account/wallet-balance", headers=_headers(body), content=json.dumps(body))
-        r.raise_for_status(); return r.json()
+        r.raise_for_status()
+        return _check_response(r.json())
 
     async def set_leverage(self, category, symbol, buy_leverage, sell_leverage):
         body = {"category":category,"symbol":symbol,"buyLeverage":str(buy_leverage),"sellLeverage":str(sell_leverage)}
         r = await self.http.post("/v5/position/set-leverage", headers=_headers(body), content=json.dumps(body))
-        r.raise_for_status(); return r.json()
+        r.raise_for_status()
+        return _check_response(r.json())
 
     async def place_order(self, body: Dict[str, Any]):
         r = await self.http.post("/v5/order/create", headers=_headers(body), content=json.dumps(body))
-        r.raise_for_status(); return r.json()
+        r.raise_for_status()
+        return _check_response(r.json())
 
     async def cancel_all(self, category, symbol):
         body = {"category":category,"symbol":symbol}
         r = await self.http.post("/v5/order/cancel-all", headers=_headers(body), content=json.dumps(body))
-        r.raise_for_status(); return r.json()
+        r.raise_for_status()
+        return _check_response(r.json())
 
     async def query_open(self, category, symbol):
         body = {"category":category,"symbol":symbol,"openOnly":1}
         r = await self.http.post("/v5/order/realtime", headers=_headers(body), content=json.dumps(body))
-        r.raise_for_status(); return r.json()
+        r.raise_for_status()
+        return _check_response(r.json())
 
     async def positions(self, category, symbol):
         body = {"category":category,"symbol":symbol}
         r = await self.http.post("/v5/position/list", headers=_headers(body), content=json.dumps(body))
-        r.raise_for_status(); return r.json()
+        r.raise_for_status()
+        return _check_response(r.json())
 
     # Helpers enforce required flags
     async def entry_limit_postonly(self, category, symbol, side, qty, price, link_id):
@@ -90,4 +113,4 @@ class BybitClient:
         }
         r = await self.http.post("/v5/position/trading-stop", headers=_headers(body), content=json.dumps(body))
         r.raise_for_status()
-        return r.json()
+        return _check_response(r.json())
