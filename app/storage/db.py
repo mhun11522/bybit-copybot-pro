@@ -1,4 +1,59 @@
-import aiosqlite
+import asyncio
+try:
+    import aiosqlite as _aiosqlite  # type: ignore
+    aiosqlite = _aiosqlite  # re-export for modules importing from this file
+except Exception:  # Fallback shim when aiosqlite isn't installable
+    import sqlite3
+
+    class _CursorShim:
+        def __init__(self, cur: sqlite3.Cursor):
+            self._cur = cur
+
+        async def fetchone(self):
+            return await asyncio.to_thread(self._cur.fetchone)
+
+        async def fetchall(self):
+            return await asyncio.to_thread(self._cur.fetchall)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            try:
+                await asyncio.to_thread(self._cur.close)
+            except Exception:
+                pass
+            return False
+
+    class _ConnShim:
+        def __init__(self, path: str):
+            self._conn = sqlite3.connect(path, check_same_thread=False)
+
+        async def execute(self, sql: str, params: tuple = ()):  # returns async cursor
+            cur = await asyncio.to_thread(self._conn.execute, sql, params)
+            return _CursorShim(cur)
+
+        async def commit(self):
+            await asyncio.to_thread(self._conn.commit)
+
+        async def close(self):
+            await asyncio.to_thread(self._conn.close)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            try:
+                await self.close()
+            except Exception:
+                pass
+            return False
+
+    class _AioSqliteShim:
+        def connect(self, path: str):
+            return _ConnShim(path)
+
+    aiosqlite = _AioSqliteShim()
 
 DB_PATH = "trades.sqlite"
 

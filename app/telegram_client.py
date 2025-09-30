@@ -37,8 +37,13 @@ async def handler(event):
     sig = parse_signal(text)
     # Attach source metadata for downstream templates
     try:
-        chat = event.chat
-        channel_name = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
+        # Prefer configured mapping if available
+        mapped = settings.CHANNEL_ID_TO_NAME.get(int(event.chat_id)) if hasattr(settings, "CHANNEL_ID_TO_NAME") else None
+        if mapped:
+            channel_name = mapped
+        else:
+            chat = event.chat
+            channel_name = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
     except Exception:
         channel_name = str(event.chat_id)
     sig["channel_id"] = int(event.chat_id)
