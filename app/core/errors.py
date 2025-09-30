@@ -9,7 +9,7 @@ _FAIL_COUNTS: dict[str, int] = {}
 _BREAKER_UNTIL: dict[str, float] = {}
 
 
-def safe_step(step_name: str, max_retries: int = 3, breaker_threshold: int = 3, breaker_cooldown_sec: int = 300):
+def safe_step(step_name: str, max_retries: int = 3, breaker_threshold: int = 3, breaker_cooldown_sec: int = 120):
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):

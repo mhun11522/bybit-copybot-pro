@@ -1,3 +1,4 @@
+from __future__ import annotations
 from decimal import Decimal
 from app.bybit_client import BybitClient
 from app.core.precision import q_qty

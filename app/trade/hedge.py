@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal
 from app.telegram.output import send_message
 from app.telegram import templates
+from app.core.precision import q_price
 
 
 class HedgeReentryManager:
@@ -60,7 +61,7 @@ class HedgeReentryManager:
             symbol=self.symbol,
             side=side_close,
             qty=qty,
-            trigger_price=str(price),
+            trigger_price=str(q_price(self.symbol, price)),
             trade_id=f"{self.trade_id}-CLOSE{self.count+1}",
         )
 
@@ -69,7 +70,7 @@ class HedgeReentryManager:
             symbol=self.symbol,
             side=side_open,
             qty=qty,
-            price=str(price),
+            price=str(q_price(self.symbol, price)),
             trade_id=f"{self.trade_id}-REV{self.count+1}",
             entry_no=1,
         )

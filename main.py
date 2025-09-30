@@ -1,6 +1,6 @@
+from app.core import decimal_ctx  # set global Decimal precision early
 import asyncio
 import sys
-from app.core import decimal_ctx  # set global Decimal precision early
 from app import settings
 from app.telegram_client import client
 from app.reports.service import ReportService

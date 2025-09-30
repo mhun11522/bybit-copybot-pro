@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal
 from app.telegram.output import send_message
 from app.telegram import templates
+from app.core.precision import q_price
 
 
 class TrailingStopManager:
@@ -39,6 +40,7 @@ class TrailingStopManager:
                 if change >= self.activation_pct:
                     # Trail 1% behind current price for demo; in production, make configurable
                     new_sl = last * (Decimal("0.99") if self.direction == "BUY" else Decimal("1.01"))
+                    new_sl = q_price(self.symbol, new_sl)
                     # Move only in favorable direction or if not active yet
                     if (not self.active) or (self.direction == "BUY" and (self.last_sl is None or new_sl > self.last_sl)) or (self.direction == "SELL" and (self.last_sl is None or new_sl < self.last_sl)):
                         print(f"🔄 Moving SL to {new_sl}")
