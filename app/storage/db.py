@@ -86,6 +86,11 @@ except Exception:  # Fallback shim when aiosqlite isn't installable
 DB_PATH = "trades.sqlite"
 
 
+async def get_db_connection():
+    """Get a database connection."""
+    return aiosqlite.connect(DB_PATH)
+
+
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         # Lightweight migrations: ensure missing columns exist

@@ -1,20 +1,20 @@
 import asyncio
 
-TARGET_CHAT_ID = None  # set to an ops/chat ID if you want duplicates there
-
 async def send_message(text: str, target_chat_id: int = None):
     """
-    Send message to Telegram. If target_chat_id is provided, send there.
-    Otherwise, send to the source channel if available in context.
+    Send message to Telegram output channel.
+    Uses OUTPUT_CHANNEL_ID from settings if target_chat_id not specified.
     """
     try:
         # Import here to avoid circular import
         from app.telegram.client import client
+        from app.config.settings import OUTPUT_CHANNEL_ID
         
-        if target_chat_id:
-            await client.send_message(target_chat_id, text)
-        elif TARGET_CHAT_ID:
-            await client.send_message(TARGET_CHAT_ID, text)
+        # Use OUTPUT_CHANNEL_ID as default if configured
+        chat_id = target_chat_id or OUTPUT_CHANNEL_ID
+        
+        if chat_id:
+            await client.send_message(chat_id, text)
         else:
             # Fallback to printing if no target is configured
             print(f"[TELEGRAM] {text}")

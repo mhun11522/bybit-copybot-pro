@@ -124,7 +124,7 @@ async def test_oco_closes_trade(monkeypatch):
         oco.bybit = mock_bybit
         
         # Simulate position closed
-        await oco._check_position_closed = AsyncMock(return_value=True)
+        oco._check_position_closed = AsyncMock(return_value=True)
         
         # Run OCO once
         await oco.run()

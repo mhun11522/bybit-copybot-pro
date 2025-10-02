@@ -119,7 +119,7 @@ async def _get_weekly_summary():
     return await loop.run_in_executor(None, _sync_operation)
 
 async def send_daily_report():
-    """Send daily report at 22:00 Stockholm time."""
+    """Send daily report at 08:00 Stockholm time."""
     try:
         stats = await _get_trade_summary()
         now = datetime.now(TZ)
@@ -127,7 +127,7 @@ async def send_daily_report():
         
         win_rate = (stats["winning_trades"] / stats["total_trades"] * 100) if stats["total_trades"] > 0 else 0
         
-        report = f"""📊 Daglig rapport ({timestamp})
+        report = f"""**📊 Daglig rapport ({timestamp})**
 ═══════════════════════════════════════
 📈 Affärer: {stats['total_trades']}
 ✅ Vinnande: {stats['winning_trades']} ({win_rate:.1f}%)
@@ -138,7 +138,7 @@ async def send_daily_report():
 📈 Max pyramid: {stats['max_pyramid_step']}
 ═══════════════════════════════════════
 
-📊 Daily Report ({timestamp})
+**📊 Daily Report ({timestamp})**
 ═══════════════════════════════════════
 📈 Trades: {stats['total_trades']}
 ✅ Winning: {stats['winning_trades']} ({win_rate:.1f}%)
@@ -156,7 +156,7 @@ async def send_daily_report():
         print(f"❌ Failed to send daily report: {e}")
 
 async def send_weekly_report():
-    """Send weekly report on Sunday at 22:00 Stockholm time."""
+    """Send weekly report on Saturday at 22:00 Stockholm time."""
     try:
         stats = await _get_weekly_summary()
         now = datetime.now(TZ)
@@ -164,7 +164,7 @@ async def send_weekly_report():
         
         win_rate = (stats["winning_trades"] / stats["total_trades"] * 100) if stats["total_trades"] > 0 else 0
         
-        report = f"""📊 Veckorapport ({timestamp})
+        report = f"""**📊 Veckorapport ({timestamp})**
 ═══════════════════════════════════════
 📅 Period: {stats['week_start']} - {stats['week_end']}
 📈 Affärer: {stats['total_trades']}
@@ -176,7 +176,7 @@ async def send_weekly_report():
 📈 Max pyramid: {stats['max_pyramid_step']}
 ═══════════════════════════════════════
 
-📊 Weekly Report ({timestamp})
+**📊 Weekly Report ({timestamp})**
 ═══════════════════════════════════════
 📅 Period: {stats['week_start']} - {stats['week_end']}
 📈 Trades: {stats['total_trades']}
@@ -217,27 +217,28 @@ async def _report_scheduler():
         try:
             now = datetime.now(TZ)
             
-            # Calculate next daily report (22:00)
-            next_daily = _next_occurrence(22, 0)
+            # Calculate next daily report (08:00)
+            next_daily = _next_occurrence(8, 0)
             
-            # Calculate next weekly report (Sunday 22:00)
-            next_weekly = _next_occurrence(22, 0, 6)  # Sunday = 6
+            # Calculate next weekly report (Saturday 22:00)
+            next_weekly = _next_occurrence(22, 0, 5)  # Saturday = 5
             
             # Wait until next report time
             next_report = min(next_daily, next_weekly)
             wait_seconds = (next_report - now).total_seconds()
             
             if wait_seconds > 0:
+                print(f"📅 Next report in {wait_seconds/3600:.1f} hours")
                 await asyncio.sleep(wait_seconds)
             
             # Check if it's time for daily report
             now = datetime.now(TZ)
-            if now.hour == 22 and now.minute == 0:
+            if now.hour == 8 and now.minute == 0:
                 await send_daily_report()
-                
-                # Check if it's also Sunday for weekly report
-                if now.weekday() == 6:  # Sunday
-                    await send_weekly_report()
+            
+            # Check if it's Saturday for weekly report
+            if now.weekday() == 5 and now.hour == 22 and now.minute == 0:  # Saturday = 5
+                await send_weekly_report()
             
         except Exception as e:
             print(f"❌ Report scheduler error: {e}")

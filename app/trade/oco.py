@@ -27,10 +27,26 @@ class OCOManager:
         try:
             orders = await self.bybit.query_open(CATEGORY, self.symbol)
             open_ids = [o.get("orderLinkId","") for o in orders.get("result",{}).get("list",[]) if o.get("orderLinkId")]
+            
+            # Check for TP orders (any order ending with TP1, TP2, TP3, TP4)
             tp_open = any(x.endswith(("TP1","TP2","TP3","TP4")) for x in open_ids)
-            sl_open = any(x.endswith(("SL",)) for x in open_ids)
-            return not tp_open and sl_open, tp_open and not sl_open
-        except Exception:
+            # Check for SL order (any order ending with SL)
+            sl_open = any(x.endswith("SL") for x in open_ids)
+            
+            # Return: (tp_filled, sl_filled)
+            # tp_filled = True if TP orders are gone but SL is still there
+            # sl_filled = True if SL order is gone but TP orders are still there
+            tp_filled = not tp_open and sl_open
+            sl_filled = not sl_open and tp_open
+            
+            if tp_filled:
+                print(f"🔔 OCO: TP orders filled, SL still open - will cancel SL")
+            elif sl_filled:
+                print(f"🔔 OCO: SL order filled, TP orders still open - will cancel TPs")
+            
+            return tp_filled, sl_filled
+        except Exception as e:
+            print(f"OCO: Error checking TP/SL fills: {e}")
             return False, False
 
     async def _calculate_pnl(self, exit_price: Decimal) -> float:
@@ -70,34 +86,45 @@ class OCOManager:
                 pass
 
     async def run(self):
+        print(f"🔄 Starting OCO manager for {self.symbol} (Trade: {self.trade_id})")
         self._running=True
+        check_count = 0
+        
         while self._running:
             try:
+                check_count += 1
+                
                 # Check if position is closed first
                 if await self._check_position_closed():
+                    print(f"🔔 OCO: Position closed for {self.symbol} - cancelling all orders")
                     await self.bybit.cancel_all(CATEGORY, self.symbol)
                     await self._close_trade("position_closed")
-                    await output.send_message(templates.tp_hit(self.symbol, "?", "position closed", self.channel_name), 
-                                            target_chat_id=self.channel_id)
+                    await output.send_message(templates.tp_hit(self.symbol, "?", "position closed", self.channel_name))
                     self._running=False; break
 
                 # Check for TP/SL fills
                 tp_filled, sl_filled = await self._check_tp_filled()
                 
                 if tp_filled:
+                    print(f"🔔 OCO: TP orders filled for {self.symbol} - cancelling SL order")
                     await self.bybit.cancel_all(CATEGORY, self.symbol)
                     await self._close_trade("tp_filled")
-                    await output.send_message(templates.tp_hit(self.symbol, "?", "filled", self.channel_name), 
-                                            target_chat_id=self.channel_id)
+                    await output.send_message(templates.tp_hit(self.symbol, "?", "filled", self.channel_name))
                     self._running=False; break
 
                 if sl_filled:
+                    print(f"🔔 OCO: SL order filled for {self.symbol} - cancelling TP orders")
                     await self.bybit.cancel_all(CATEGORY, self.symbol)
                     await self._close_trade("sl_hit")
-                    await output.send_message(templates.sl_hit(self.symbol, "triggered", self.channel_name), 
-                                            target_chat_id=self.channel_id)
+                    await output.send_message(templates.sl_hit(self.symbol, "triggered", self.channel_name))
                     self._running=False; break
+                
+                # Log every 30 checks (1 minute) to show OCO is running
+                if check_count % 30 == 0:
+                    print(f"🔄 OCO: Still monitoring {self.symbol} ({check_count} checks)")
                     
             except Exception as e:
-                print(f"OCO error: {e}")
+                print(f"OCO error for {self.symbol}: {e}")
             await asyncio.sleep(2)
+        
+        print(f"🛑 OCO manager stopped for {self.symbol}")

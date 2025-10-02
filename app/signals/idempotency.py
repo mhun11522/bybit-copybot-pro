@@ -1,112 +1,77 @@
-"""Idempotency and deduplication for signals."""
-
-import hashlib
-import sqlite3
-import asyncio
-from datetime import datetime, timedelta
-from app.config.settings import DEDUP_SECONDS, MAX_CONCURRENT_TRADES
+import aiosqlite, time, math
+from app.config.settings import DEDUP_SECONDS, DUP_TOLERANCE_PCT, BLOCK_SAME_DIR_SECONDS
 
 DB_PATH = "trades.sqlite"
 
-def _hash_signal(chat_id: int, text: str) -> str:
-    """Create hash for signal deduplication."""
-    return hashlib.sha256(f"{chat_id}|{text}".encode("utf-8")).hexdigest()
+async def _ensure_tables():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS signal_guard(
+            chat_id INTEGER,
+            symbol  TEXT,
+            direction TEXT,
+            entry1  REAL,
+            entry2  REAL,
+            ts      INTEGER,
+            PRIMARY KEY(chat_id, symbol, direction, ts)
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS symbol_dir_block(
+            symbol  TEXT,
+            direction TEXT,
+            until_ts INTEGER,
+            PRIMARY KEY(symbol, direction)
+        )""")
+        await db.commit()
 
-async def is_new_signal(chat_id: int, text: str) -> bool:
-    """Check if signal is new and not duplicate."""
-    signal_hash = _hash_signal(chat_id, text)
-    
-    def _sync_db_operation():
-        with sqlite3.connect(DB_PATH) as db:
-            # Create tables if not exist
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS signal_seen(
-                    chat_id INTEGER,
-                    signal_hash TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY(chat_id, signal_hash)
-                )
-            """)
-            
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS active_trades(
-                    trade_id TEXT PRIMARY KEY,
-                    symbol TEXT,
-                    direction TEXT,
-                    channel_name TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    status TEXT DEFAULT 'ACTIVE'
-                )
-            """)
-            
-            db.commit()
-            
-            # Check if signal already seen within dedup window
-            cutoff_time = datetime.now() - timedelta(seconds=DEDUP_SECONDS)
-            cur = db.execute("""
-                SELECT 1 FROM signal_seen 
-                WHERE chat_id = ? AND signal_hash = ? AND timestamp > ?
-            """, (chat_id, signal_hash, cutoff_time))
-            if cur.fetchone():
-                return False
-            
-            # Check capacity limit
-            cur = db.execute("""
-                SELECT COUNT(*) FROM active_trades WHERE status = 'ACTIVE'
-            """)
-            active_count = cur.fetchone()[0]
-            if active_count >= MAX_CONCURRENT_TRADES:
-                print(f"⛔ Capacity limit reached: {active_count}/{MAX_CONCURRENT_TRADES}")
-                return False
-            
-            # Record signal as seen
-            try:
-                db.execute("""
-                    INSERT INTO signal_seen(chat_id, signal_hash) VALUES(?, ?)
-                """, (chat_id, signal_hash))
-                db.commit()
-                return True
-            except sqlite3.IntegrityError:
-                # Signal already exists
-                return False
-    
-    # Run sync operation in thread pool
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _sync_db_operation)
+def _within_tolerance(a: float, b: float, pct: float) -> bool:
+    if a == 0 or b == 0: return False
+    diff = abs(a - b) / ((a + b) / 2.0) * 100.0
+    return diff <= pct
 
-async def register_trade(trade_id: str, symbol: str, direction: str, channel_name: str):
-    """Register new active trade."""
-    def _sync_operation():
-        with sqlite3.connect(DB_PATH) as db:
-            db.execute("""
-                INSERT OR REPLACE INTO active_trades(trade_id, symbol, direction, channel_name)
-                VALUES(?, ?, ?, ?)
-            """, (trade_id, symbol, direction, channel_name))
-            db.commit()
-    
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _sync_operation)
+async def block_same_symbol_dir(symbol: str, direction: str):
+    await _ensure_tables()
+    until_ts = int(time.time()) + BLOCK_SAME_DIR_SECONDS
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""INSERT OR REPLACE INTO symbol_dir_block(symbol,direction,until_ts)
+                            VALUES(?,?,?)""", (symbol.upper(), direction.upper(), until_ts))
+        await db.commit()
 
-async def close_trade(trade_id: str):
-    """Mark trade as closed."""
-    def _sync_operation():
-        with sqlite3.connect(DB_PATH) as db:
-            db.execute("""
-                UPDATE active_trades SET status = 'CLOSED' WHERE trade_id = ?
-            """, (trade_id,))
-            db.commit()
-    
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _sync_operation)
+async def is_symbol_dir_blocked(symbol: str, direction: str) -> bool:
+    await _ensure_tables()
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""SELECT until_ts FROM symbol_dir_block
+                                 WHERE symbol=? AND direction=?""",
+                              (symbol.upper(), direction.upper())) as cur:
+            row = await cur.fetchone()
+            return bool(row and row[0] > now)
 
-async def get_active_trades() -> int:
-    """Get count of active trades."""
-    def _sync_operation():
-        with sqlite3.connect(DB_PATH) as db:
-            cur = db.execute("""
-                SELECT COUNT(*) FROM active_trades WHERE status = 'ACTIVE'
-            """)
-            return cur.fetchone()[0]
-    
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _sync_operation)
+async def is_new_signal(chat_id: int, symbol: str, direction: str, entries: list[str]) -> bool:
+    """
+    Dedup within 3h window with ±5% tolerance on entries.
+    Additionally, block same symbol+direction within the same window.
+    """
+    await _ensure_tables()
+    now = int(time.time())
+    e1 = float(entries[0]) if entries else math.nan
+    e2 = float(entries[1]) if len(entries) > 1 else e1
+
+    # Symbol/dir block?
+    if await is_symbol_dir_blocked(symbol, direction):
+        return False
+
+    floor_ts = now - DEDUP_SECONDS
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""SELECT entry1, entry2, ts FROM signal_guard
+                                 WHERE chat_id=? AND symbol=? AND direction=? AND ts>=?""",
+                              (int(chat_id), symbol.upper(), direction.upper(), floor_ts)) as cur:
+            async for r1, r2, ts in cur:
+                if _within_tolerance(e1, float(r1), DUP_TOLERANCE_PCT) and _within_tolerance(e2, float(r2), DUP_TOLERANCE_PCT):
+                    return False
+        # new → insert row
+        await db.execute("""INSERT OR REPLACE INTO signal_guard(chat_id,symbol,direction,entry1,entry2,ts)
+                            VALUES(?,?,?,?,?,?)""",
+                         (int(chat_id), symbol.upper(), direction.upper(), e1, e2, now))
+        await db.commit()
+    # Also start a symbol/dir block for the same window
+    await block_same_symbol_dir(symbol, direction)
+    return True
