@@ -172,6 +172,25 @@ async def main():
         asyncio.create_task(position_manager.start_cleanup_scheduler())
         print("[OK] Position manager started.")
         
+        # Start Bybit WebSocket for real-time updates (if available)
+        try:
+            from app.bybit.websocket import get_websocket
+            ws = await get_websocket()
+            print("[OK] Bybit WebSocket started for real-time updates")
+        except Exception as e:
+            print(f"[WARN] WebSocket not available: {e}")
+            print("[INFO] Bot will use REST API polling for updates")
+        
+        # Start advanced report scheduler
+        try:
+            from app.reports.scheduler_v2 import get_report_scheduler
+            report_scheduler = await get_report_scheduler()
+            await report_scheduler.start()
+            print("[OK] Advanced report scheduler started (Daily 08:00, Weekly Sat 22:00 Stockholm)")
+        except Exception as e:
+            print(f"[WARN] Report scheduler not available: {e}")
+            print("[INFO] Reports will not be automatically generated")
+        
         # Start strict Telegram client with all compliance features
         print("[INFO] Starting strict Telegram client with ALL COMPLIANCE FEATURES...")
         print("  ✅ Message sequencing: No Telegram until Bybit confirms")
@@ -206,6 +225,21 @@ async def main():
             from app.reports.strict_scheduler import stop_strict_report_scheduler
             await stop_strict_report_scheduler()
             
+            # Stop WebSocket (if available)
+            try:
+                from app.bybit.websocket import stop_websocket
+                await stop_websocket()
+            except Exception as e:
+                print(f"[WARN] WebSocket cleanup error: {e}")
+            
+            # Stop report scheduler (if available)
+            try:
+                from app.reports.scheduler_v2 import get_report_scheduler
+                report_scheduler = await get_report_scheduler()
+                await report_scheduler.stop()
+            except Exception as e:
+                print(f"[WARN] Report scheduler cleanup error: {e}")
+                
             # Get all running tasks and cancel them properly
             current_task = asyncio.current_task()
             tasks = [task for task in asyncio.all_tasks() if not task.done() and task is not current_task]

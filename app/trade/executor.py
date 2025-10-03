@@ -200,6 +200,8 @@ class TradeExecutor:
     ) -> float:
         """Calculate position size based on risk management."""
         try:
+            from app.core.symbol_registry import get_symbol_registry
+            
             # Get risk percentage from signal or use default
             risk_percent = signal_data.get('risk_percent', RISK_PER_TRADE)
             
@@ -220,15 +222,36 @@ class TradeExecutor:
             # Calculate position size in contracts
             position_size = position_value / entry_price
             
-            # Apply minimum size check
-            min_size = 0.001  # Minimum position size
-            if position_size < min_size:
-                return 0.0
+            # Get symbol metadata for proper quantization
+            symbol = signal_data['symbol']
+            registry = get_symbol_registry()
+            symbol_info = registry.get_symbol_info(symbol)
             
-            # Round down to avoid over-leveraging
-            return float(Decimal(str(position_size)).quantize(
-                Decimal('0.001'), rounding=ROUND_DOWN
-            ))
+            if symbol_info:
+                # Quantize to step size
+                position_size_decimal = symbol_info.quantize_qty(Decimal(str(position_size)))
+                
+                # Check minimum quantity
+                if position_size_decimal < symbol_info.min_qty:
+                    trade_logger.warning(f"Position size {position_size_decimal} below minimum {symbol_info.min_qty} for {symbol}")
+                    return 0.0
+                
+                # Check minimum notional value
+                notional_value = position_size_decimal * Decimal(str(entry_price))
+                if notional_value < symbol_info.min_notional:
+                    trade_logger.warning(f"Notional value {notional_value} below minimum {symbol_info.min_notional} for {symbol}")
+                    return 0.0
+                
+                return float(position_size_decimal)
+            else:
+                # Fallback to old logic if symbol not found
+                min_size = 0.001
+                if position_size < min_size:
+                    return 0.0
+                
+                return float(Decimal(str(position_size)).quantize(
+                    Decimal('0.001'), rounding=ROUND_DOWN
+                ))
             
         except Exception as e:
             trade_logger.error(f"Position size calculation failed: {e}")

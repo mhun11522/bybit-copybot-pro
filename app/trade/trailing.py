@@ -7,11 +7,12 @@ from app.config.settings import CATEGORY, TRAIL_TRIGGER_PCT, TRAIL_DISTANCE_PCT,
 from app.telegram.output import send_message
 
 class TrailingStopManager:
-    def __init__(self, trade_id, symbol, direction, avg_entry, position_size, channel_name):
+    def __init__(self, trade_id, symbol, direction, original_entry, avg_entry, position_size, channel_name):
         self.trade_id=trade_id
         self.symbol=symbol
         self.direction=direction.upper()  # BUY/SELL
-        self.avg_entry=Decimal(str(avg_entry))
+        self.original_entry=Decimal(str(original_entry))  # CRITICAL: Use original entry for gain calculation
+        self.avg_entry=Decimal(str(avg_entry))  # Current average entry
         self.pos_size=Decimal(str(position_size))
         self.channel_name=channel_name
         self.bybit=BybitClient()
@@ -19,6 +20,7 @@ class TrailingStopManager:
         self._hwm=None
         self._lwm=None
         self._running=False
+        self._tps_cancelled=False  # Track if TPs below 6.1% have been cancelled
 
     async def _mark(self) -> Decimal:
         pos = await self.bybit.positions(CATEGORY, self.symbol)
@@ -34,18 +36,47 @@ class TrailingStopManager:
         await self.bybit.sl_market_reduceonly_mark(CATEGORY, self.symbol, side_exit, str(qty), str(new_sl_q), f"{self.trade_id}-SL")
         await send_message(f"🔄 Trailing stop moved: {self.symbol} → SL={new_sl_q} • Source: {self.channel_name}")
 
+    async def _cancel_tps_below_6_1_percent(self):
+        """Cancel all TPs below 6.1% when trailing stop activates."""
+        try:
+            # Get all open orders
+            orders = await self.bybit.get_open_orders(CATEGORY, self.symbol)
+            if orders.get('retCode') == 0:
+                for order in orders.get('result', {}).get('list', []):
+                    order_type = order.get('orderType', '')
+                    if order_type == 'Limit' and not order.get('reduceOnly', False):
+                        # This is a TP order (not SL)
+                        order_id = order.get('orderId', '')
+                        if order_id:
+                            await self.bybit.cancel_order(CATEGORY, self.symbol, order_id)
+                            await send_message(f"🔄 Trailing activated: Cancelled TP below 6.1% for {self.symbol} • Source: {self.channel_name}")
+        except Exception as e:
+            print(f"Error cancelling TPs: {e}")
+
     async def run(self):
         self._running=True
-        dist = Decimal(f"{TRAIL_DISTANCE_PCT}")/Decimal("100")
-        trigger = Decimal(f"{TRAIL_TRIGGER_PCT}")
+        dist = Decimal("0.025")  # 2.5% behind price as per client spec
+        trigger = Decimal("6.1")  # 6.1% trigger as per client spec
         while self._running:
             try:
                 mark = await self._mark()
-                gain = pnl_pct(self.direction, self.avg_entry, mark)
+                # CRITICAL: Use original entry for gain calculation, not average entry
+                gain = pnl_pct(self.direction, self.original_entry, mark)
+                
                 if not self._armed and gain >= trigger:
                     self._armed=True
-                    # initial ~B/E
-                    await self._move_sl(self.avg_entry)
+                    # Cancel all TPs below 6.1% when trailing starts
+                    if not self._tps_cancelled:
+                        await self._cancel_tps_below_6_1_percent()
+                        self._tps_cancelled=True
+                    
+                    # Set initial trailing SL at 2.5% behind current price
+                    if self.direction == "BUY":
+                        initial_sl = mark * (Decimal("1") - dist)
+                    else:
+                        initial_sl = mark * (Decimal("1") + dist)
+                    await self._move_sl(initial_sl)
+                    await send_message(f"🔄 TRAILING STOP AKTIVERAD: {self.symbol} at +{gain:.1f}% • Source: {self.channel_name}")
 
                 if self._armed:
                     if self.direction=="BUY":

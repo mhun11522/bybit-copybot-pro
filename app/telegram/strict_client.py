@@ -4,6 +4,7 @@ from telethon import TelegramClient, events
 from app.core.strict_config import STRICT_CONFIG
 from app.signals.strict_parser import get_strict_parser
 from app.core.idempotency import is_duplicate_signal, mark_signal_processed
+from app.core.signal_blocking import is_signal_blocked
 from app.core.confirmation_gate import get_confirmation_gate
 from app.core.strict_fsm import TradeFSM
 from app.core.logging import system_logger, telegram_logger
@@ -56,7 +57,7 @@ class StrictTelegramClient:
                 return
             
             # Parse signal with strict requirements
-            signal_data = self.parser.parse_signal(text, channel_name)
+            signal_data = await self.parser.parse_signal(text, channel_name)
             if not signal_data:
                 system_logger.debug("Signal parsing failed", {
                     'text': text[:100],
@@ -70,6 +71,19 @@ class StrictTelegramClient:
                     'symbol': signal_data['symbol'],
                     'channel': channel_name
                 })
+                return
+            
+            # Check for signal blocking (3-hour window, 5% tolerance)
+            is_blocked, block_reason = is_signal_blocked(signal_data)
+            if is_blocked:
+                system_logger.info("Signal blocked by 3-hour rule", {
+                    'symbol': signal_data['symbol'],
+                    'direction': signal_data['direction'],
+                    'channel': channel_name,
+                    'reason': block_reason
+                })
+                # Send blocking message to user
+                await self._send_signal_blocked(signal_data, block_reason)
                 return
             
             # Mark signal as processed
@@ -90,16 +104,15 @@ class StrictTelegramClient:
     async def _check_channel_allowed(self, event) -> tuple[bool, str]:
         """Check if channel is in whitelist."""
         try:
-            # Get channel name
-            if hasattr(event.chat, 'title'):
-                channel_name = event.chat.title
-            elif hasattr(event.chat, 'username'):
-                channel_name = f"@{event.chat.username}"
-            else:
-                channel_name = str(event.chat_id)
+            # Get channel ID
+            channel_id = str(event.chat_id)
             
-            # Check whitelist
-            allowed = channel_name in STRICT_CONFIG.source_whitelist
+            # Check if channel ID is whitelisted
+            allowed = STRICT_CONFIG.is_channel_whitelisted(channel_id)
+            
+            # Get channel name for logging
+            channel_name = STRICT_CONFIG.get_channel_name(channel_id)
+            
             return allowed, channel_name
             
         except Exception as e:
@@ -183,10 +196,13 @@ class StrictTelegramClient:
     async def _send_error_message(self, signal_data: dict, error_message: str):
         """Send error message using Swedish template."""
         try:
+            # Parse specific error types for better user understanding
+            error_type, specific_message = self._parse_error_message(error_message)
+            
             error_data = {
                 'symbol': signal_data['symbol'],
-                'error_type': 'Trade Execution',
-                'error_message': error_message
+                'error_type': error_type,
+                'error_message': specific_message
             }
             
             message = self.templates.error_occurred(error_data)
@@ -194,6 +210,56 @@ class StrictTelegramClient:
             
         except Exception as e:
             system_logger.error(f"Error sending error message: {e}", exc_info=True)
+    
+    def _parse_error_message(self, error_message: str) -> tuple[str, str]:
+        """Parse error message to provide specific, actionable information."""
+        error_lower = error_message.lower()
+        
+        if "qty invalid" in error_lower:
+            return (
+                "Ogiltig Position Storlek",
+                "Position storlek uppfyller inte Bybit's krav. Kontrollera min/max kvantitet och notional värde."
+            )
+        elif "side invalid" in error_lower:
+            return (
+                "Ogiltig Riktning",
+                "Handelsriktning är ogiltig. Använd 'Buy' för LONG eller 'Sell' för SHORT."
+            )
+        elif "insufficient balance" in error_lower:
+            return (
+                "Otillräckligt Saldo",
+                "Kontot har inte tillräckligt saldo för att placera ordern. Kontrollera tillgängligt kapital."
+            )
+        elif "symbol not found" in error_lower or "closed symbol" in error_lower:
+            return (
+                "Symbol Inte Tillgänglig",
+                "Symbolen är inte tillgänglig för handel på Bybit. Kontrollera symbol status."
+            )
+        elif "leverage invalid" in error_lower:
+            return (
+                "Ogiltig Hävstång",
+                "Hävstången är ogiltig för denna symbol. Kontrollera tillåten hävstångsgräns."
+            )
+        elif "price invalid" in error_lower:
+            return (
+                "Ogiltigt Pris",
+                "Priset uppfyller inte Bybit's tick size krav. Kontrollera pris precision."
+            )
+        elif "timeout" in error_lower:
+            return (
+                "Tidsgräns Överskriden",
+                "Bybit API svarade inte inom tillåten tid. Försök igen senare."
+            )
+        elif "network" in error_lower or "connection" in error_lower:
+            return (
+                "Nätverksfel",
+                "Problem med nätverksanslutning till Bybit. Kontrollera internetanslutning."
+            )
+        else:
+            return (
+                "Trade Execution",
+                f"Okänt fel: {error_message}"
+            )
     
     async def start(self):
         """Start the strict Telegram client."""
@@ -205,9 +271,25 @@ class StrictTelegramClient:
             })
             print("[OK] Strict Telegram client started")
             
+            # Start connection monitoring
+            asyncio.create_task(self._monitor_connection())
+            
         except Exception as e:
             system_logger.error(f"Failed to start Telegram client: {e}", exc_info=True)
             raise
+    
+    async def _monitor_connection(self):
+        """Monitor Telegram connection and reconnect if needed."""
+        while True:
+            try:
+                if not self.client.is_connected():
+                    system_logger.warning("Telegram connection lost, attempting to reconnect...")
+                    await self.client.connect()
+                    system_logger.info("Telegram connection restored")
+                await asyncio.sleep(30)  # Check every 30 seconds
+            except Exception as e:
+                system_logger.error(f"Connection monitoring error: {e}")
+                await asyncio.sleep(60)  # Wait longer on error
     
     async def stop(self):
         """Stop the strict Telegram client."""
@@ -218,6 +300,27 @@ class StrictTelegramClient:
             
         except Exception as e:
             system_logger.error(f"Error stopping Telegram client: {e}", exc_info=True)
+    
+    async def _send_signal_blocked(self, signal_data: dict, block_reason: str):
+        """Send signal blocked message."""
+        try:
+            from app.telegram.client_templates import ClientTemplates
+            
+            templates = ClientTemplates()
+            message = f"""🚫 SIGNAL BLOCKERAD
+📢 Från kanal: {signal_data.get('channel_name', '')}
+📊 Symbol: {signal_data.get('symbol', '')}
+📈 Riktning: {signal_data.get('direction', '')}
+
+📍 Anledning: {block_reason}
+⏰ Blockad i 3 timmar (5% tolerans)
+
+ℹ️ Olika riktning eller >5% skillnad är OK"""
+            
+            await send_message(message)
+            
+        except Exception as e:
+            system_logger.error(f"Error sending signal blocked message: {e}", exc_info=True)
     
     def get_active_trades_count(self) -> int:
         """Get count of active trades."""

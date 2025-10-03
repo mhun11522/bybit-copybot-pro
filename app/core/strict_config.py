@@ -48,6 +48,9 @@ class StrictSettings:
     bybit_endpoint: str = "https://api.bybit.com"
     bybit_recv_window: str = "30000"
     bybit_api_key: str = ""
+    
+    # Position limits
+    max_position_size_usdt: Decimal = Decimal("1000")  # Maximum position size in USDT
     bybit_api_secret: str = ""
     
     # Telegram configuration
@@ -55,24 +58,27 @@ class StrictSettings:
     telegram_api_hash: str = ""
     telegram_session: str = "bybit_copybot_session"
     
-    # Channel whitelist (exact client channels)
-    source_whitelist: List[str] = [
-        "SRC_LUX_LEAK",
-        "SRC_CRYPTORAKETEN", 
-        "SRC_SMART_CRYPTO",
-        "SRC_WOLF_TRADING",
-        "SRC_ALGOBOT",
-        "SRC_BITOP_CRYPTO",
-        "SRC_CRYPTO_BOE",
-        "SRC_CRYPTO_JOBS",
-        "SRC_BYBIT_FUTURE",
-        "SRC_CRYPTO_PUMP_CLUB",
-        "SRC_TRADEBOLT",
-        "SRC_SCALPING_100",
-        "SRC_CRYPTO_SCALPING",
-        "SRC_HEMI_SIGNALS",
-        "MY_TEST_CHANNEL"
-    ]
+    # Channel ID to name mapping (from environment variable)
+    channel_id_name_map: Dict[str, str] = {
+        "-1002464706951": "Smart Crypto Signals Private",
+        "-1002290339976": "Crypto Pump Club 📈 Free ( Crypto Future|Spot Signals)", 
+        "-1003035035852": "Wolf Of Trading",
+        "-1002296565814": "Wolf Of Trading",
+        "-1001535877716": "AlgoBot Signals",
+        "-1002646388542": "Bitop Crypto Signals",
+        "-1002007321736": "Crypto BOE Signals",
+        "-1001741713321": "Crypto Jobs",
+        "-1002096444523": "Bybit Future Signals",
+        "-1002467159534": "Crypto Pump Club",
+        "-1001778431342": "TradeBolt Signals",
+        "-1002308774475": "Scalping 100 Signals",
+        "-1002655381894": "Crypto Scalping Signals",
+        "-1001858531978": "Hemi Signals",
+        "-1003027029201": "MY_TEST_CHANNEL"
+    }
+    
+    # Whitelisted channel IDs (derived from mapping)
+    source_whitelist: List[str] = list(channel_id_name_map.keys())
     
     # Order type enforcement
     entry_order_type: str = "Limit"
@@ -86,7 +92,7 @@ class StrictSettings:
     supported_categories: List[str] = ["linear"]  # USDT perps only
     
     # Idempotency settings
-    idempotency_ttl_seconds: int = 90  # 90-second sliding window
+    idempotency_ttl_seconds: int = 10800  # 3-hour sliding window as per client requirements
     
     def get_timezone(self) -> ZoneInfo:
         """Get timezone object."""
@@ -102,6 +108,14 @@ class StrictSettings:
             if price_pct >= level["trigger"]:
                 return level
         return {}
+    
+    def get_channel_name(self, channel_id: str) -> str:
+        """Get channel name from channel ID."""
+        return self.channel_id_name_map.get(channel_id, f"Unknown_{channel_id}")
+    
+    def is_channel_whitelisted(self, channel_id: str) -> bool:
+        """Check if channel ID is whitelisted."""
+        return channel_id in self.source_whitelist
 
 def load_strict_config() -> StrictSettings:
     """Load configuration with validation."""
@@ -115,8 +129,25 @@ def load_strict_config() -> StrictSettings:
         config.telegram_api_id = int(os.getenv("TELEGRAM_API_ID", "0"))
         config.telegram_api_hash = os.getenv("TELEGRAM_API_HASH", "")
         config.telegram_session = os.getenv("TELEGRAM_SESSION", "bybit_copybot_session")
-        config.bybit_endpoint = os.getenv("BYBIT_ENDPOINT", "https://api.bybit.com")
+        config.bybit_endpoint = os.getenv("BYBIT_ENDPOINT", "https://api-demo.bybit.com")
         config.bybit_recv_window = os.getenv("BYBIT_RECV_WINDOW", "30000")
+        
+        # Load channel ID to name mapping from environment
+        channel_mapping_str = os.getenv("CHANNEL_ID_NAME_MAP", "")
+        if channel_mapping_str:
+            config.channel_id_name_map = {}
+            config.source_whitelist = []
+            
+            # Parse format: -1002464706951:SRC_LUX_LEAK,-1002290339976:SRC_CRYPTORAKETEN,...
+            for mapping in channel_mapping_str.split(','):
+                if ':' in mapping:
+                    channel_id, channel_name = mapping.strip().split(':', 1)
+                    config.channel_id_name_map[channel_id] = channel_name
+                    config.source_whitelist.append(channel_id)
+            
+            print(f"Loaded {len(config.source_whitelist)} whitelisted channels from environment")
+        else:
+            print("CHANNEL_ID_NAME_MAP environment variable not set, using default channels")
         
         # Override with existing settings if available
         try:

@@ -3,7 +3,7 @@
 import asyncio
 from enum import Enum
 from typing import Dict, Any, Optional, Callable
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from datetime import datetime
 from app.core.logging import system_logger, trade_logger
 from app.core.strict_config import STRICT_CONFIG
@@ -161,10 +161,18 @@ class TradeFSM:
             gate = get_confirmation_gate()
             
             # Place entry orders through confirmation gate
+            # Handle MARKET entries properly
+            processed_entries = []
+            for e in self.signal_data['entries']:
+                if e == "MARKET":
+                    processed_entries.append("MARKET")
+                else:
+                    processed_entries.append(Decimal(e))
+            
             success = await gate.place_entry_orders(
                 self.signal_data['symbol'],
                 self.signal_data['direction'],
-                [Decimal(e) for e in self.signal_data['entries']],
+                processed_entries,
                 self.position_size,
                 Decimal(str(self.signal_data['leverage'])),
                 self.signal_data['channel_name']
@@ -178,7 +186,15 @@ class TradeFSM:
             return success
             
         except Exception as e:
-            system_logger.error(f"Entry placed handler error: {e}", exc_info=True)
+            error_msg = str(e)
+            if "closed symbol error" in error_msg or "not live" in error_msg:
+                system_logger.warning(f"Symbol {self.signal_data['symbol']} is not tradeable on Bybit", {
+                    'symbol': self.signal_data['symbol'],
+                    'error': error_msg
+                })
+            else:
+                system_logger.error(f"Entry placed handler error: {e}", exc_info=True)
+            await self._transition_to(TradeState.ERROR)
             return False
     
     async def _handle_entry_filled(self) -> bool:
@@ -388,14 +404,183 @@ class TradeFSM:
     
     async def _calculate_position_size(self) -> Decimal:
         """Calculate position size based on risk management."""
-        # This would implement the 2% risk, 20 USDT IM logic
-        # Implementation depends on your risk management system
-        return Decimal("0.001")  # Placeholder
+        try:
+            from app.core.symbol_registry import get_symbol_registry
+            from app.bybit.client import BybitClient
+            
+            # Get account balance
+            client = BybitClient()
+            balance_data = await client.wallet_balance("USDT")
+            if not balance_data:
+                system_logger.error("Failed to get account balance - no response")
+                return Decimal("0")
+            
+            # Check if the response has the expected structure
+            if 'result' in balance_data and 'list' in balance_data['result'] and balance_data['result']['list']:
+                # Extract balance from the list format
+                account_info = balance_data['result']['list'][0]
+                balance = Decimal(str(account_info.get('totalWalletBalance', '0')))
+            elif 'totalWalletBalance' in balance_data:
+                balance = Decimal(str(balance_data['totalWalletBalance']))
+            else:
+                system_logger.error(f"Unexpected balance data format: {balance_data}")
+                return Decimal("0")
+            
+            if balance <= 0:
+                system_logger.error(f"Invalid balance: {balance}")
+                return Decimal("0")
+            
+            # Use fixed IM target of 20 USDT as per client requirements
+            position_value = STRICT_CONFIG.im_target
+            
+            # Apply channel risk multiplier to IM
+            channel_name = self.signal_data.get('channel_name', 'DEFAULT')
+            from app.config.trading_config import get_channel_risk_multiplier
+            risk_multiplier = Decimal(str(get_channel_risk_multiplier(channel_name)))
+            position_value = position_value * risk_multiplier
+            
+            # Ensure minimum notional per entry (for dual entries, each needs 5 USDT minimum)
+            entries_count = len(self.signal_data.get('entries', [1]))
+            min_notional_per_entry = Decimal("5.0")  # Bybit minimum
+            min_total_notional = min_notional_per_entry * entries_count
+            position_value = max(position_value, min_total_notional)
+            
+            # Apply maximum position size limit
+            position_value = min(position_value, STRICT_CONFIG.max_position_size_usdt)
+            
+            # Get entry price (use first entry)
+            entry_price = self.signal_data['entries'][0]
+            if entry_price == "MARKET":
+                # For market entries, we'll need to get current price
+                ticker_response = await client.get_ticker(self.signal_data['symbol'])
+                if ticker_response and 'result' in ticker_response and 'list' in ticker_response['result'] and ticker_response['result']['list']:
+                    # Extract lastPrice from the first ticker in the list
+                    ticker_data = ticker_response['result']['list'][0]
+                    if 'lastPrice' in ticker_data:
+                        entry_price = Decimal(str(ticker_data['lastPrice']))
+                    else:
+                        system_logger.error(f"No lastPrice in ticker data for {self.signal_data['symbol']}")
+                        return Decimal("0")
+                else:
+                    system_logger.error(f"Failed to get market price for {self.signal_data['symbol']}: {ticker_response}")
+                    return Decimal("0")
+            else:
+                entry_price = Decimal(str(entry_price))
+            
+            # Calculate position size in contracts
+            # position_value is the IM target (20 USDT), but we need to account for leverage
+            # With leverage, we can control more contracts with the same margin
+            leverage = self.signal_data.get('leverage', Decimal('10'))
+            # Ensure leverage is Decimal type
+            if isinstance(leverage, (int, float)):
+                leverage = Decimal(str(leverage))
+            # Calculate notional value (position_value * leverage)
+            notional_value = position_value * leverage
+            # Calculate position size in contracts
+            position_size = notional_value / entry_price
+            
+            # Get symbol metadata for proper quantization
+            symbol = self.signal_data['symbol']
+            registry = await get_symbol_registry()
+            symbol_info = await registry.get_symbol_info(symbol)
+            
+            if symbol_info:
+                # Quantize to step size
+                position_size_decimal = symbol_info.quantize_qty(Decimal(str(position_size)))
+                
+                # Check minimum quantity
+                if position_size_decimal < symbol_info.min_qty:
+                    system_logger.warning(f"Position size {position_size_decimal} below minimum {symbol_info.min_qty} for {symbol}")
+                    # Use minimum quantity instead
+                    position_size_decimal = symbol_info.min_qty
+                
+                # Check maximum quantity
+                if position_size_decimal > symbol_info.max_qty:
+                    system_logger.warning(f"Position size {position_size_decimal} exceeds maximum {symbol_info.max_qty} for {symbol}")
+                    # Use maximum quantity instead
+                    position_size_decimal = symbol_info.max_qty
+                
+                # Check minimum notional value
+                notional_value = position_size_decimal * entry_price
+                if notional_value < symbol_info.min_notional:
+                    system_logger.warning(f"Notional value {notional_value} below minimum {symbol_info.min_notional} for {symbol}")
+                    # Adjust to meet minimum notional - round UP to ensure we exceed minimum
+                    position_size_decimal = symbol_info.min_notional / entry_price
+                    # Round UP to next valid step to ensure notional exceeds minimum
+                    from decimal import ROUND_UP
+                    position_size_decimal = position_size_decimal.quantize(symbol_info.step_size, rounding=ROUND_UP)
+                    
+                    # Verify the adjustment worked
+                    final_notional = position_size_decimal * entry_price
+                    if final_notional < symbol_info.min_notional:
+                        # If still below minimum, add one more step
+                        position_size_decimal += symbol_info.step_size
+                        final_notional = position_size_decimal * entry_price
+                        system_logger.info(f"Adjusted position size to {position_size_decimal}, notional: {final_notional}")
+                
+                # Final validation
+                if not symbol_info.validate_qty(position_size_decimal):
+                    system_logger.error(f"Position size {position_size_decimal} failed validation for {symbol}")
+                    return Decimal("0")
+                
+                if not symbol_info.validate_notional(position_size_decimal * entry_price):
+                    system_logger.error(f"Notional value {position_size_decimal * entry_price} failed validation for {symbol}")
+                    return Decimal("0")
+                
+                system_logger.info(f"Calculated position size: {position_size_decimal} for {symbol}", {
+                    'balance': float(balance),
+                    'risk_multiplier': float(risk_multiplier),
+                    'position_value': float(position_value),
+                    'leverage': float(leverage),
+                    'notional_value': float(notional_value),
+                    'entry_price': float(entry_price),
+                    'min_qty': float(symbol_info.min_qty),
+                    'min_notional': float(symbol_info.min_notional),
+                    'step_size': float(symbol_info.step_size)
+                })
+                
+                return position_size_decimal
+            else:
+                # Fallback to old logic if symbol not found
+                min_size = Decimal("0.001")
+                if position_size < min_size:
+                    return min_size
+                
+                return Decimal(str(position_size)).quantize(
+                    Decimal('0.001'), rounding=ROUND_DOWN
+                )
+            
+        except Exception as e:
+            system_logger.error(f"Position size calculation failed: {e}", exc_info=True)
+            return Decimal("0")
     
     async def _set_leverage_operation(self) -> Dict[str, Any]:
         """Set leverage operation for confirmation gate."""
-        # This would call Bybit to set leverage
-        return {'retCode': 0}  # Placeholder
+        try:
+            from app.bybit.client import BybitClient
+            
+            client = BybitClient()
+            symbol = self.signal_data['symbol']
+            leverage = self.signal_data['leverage']
+            
+            # Set leverage on Bybit
+            result = await client.set_leverage(
+                category="linear",
+                symbol=symbol,
+                buy_leverage=str(leverage),
+                sell_leverage=str(leverage)
+            )
+            
+            if result.get('retCode') == 0:
+                system_logger.info(f"Leverage set successfully: {symbol} = {leverage}x")
+                return result
+            else:
+                system_logger.error(f"Failed to set leverage: {result}")
+                return result
+                
+        except Exception as e:
+            system_logger.error(f"Leverage setting error: {e}", exc_info=True)
+            return {'retCode': -1, 'retMsg': str(e)}
     
     async def _leverage_confirmed_callback(self, result: Dict[str, Any]):
         """Callback when leverage is confirmed."""

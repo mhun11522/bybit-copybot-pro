@@ -7,11 +7,12 @@ from app.trade.metrics import pnl_pct
 from app.telegram.output import send_message
 
 class PyramidManager:
-    def __init__(self, trade_id, symbol, direction, avg_entry, position_size, leverage, channel_name):
+    def __init__(self, trade_id, symbol, direction, original_entry, avg_entry, position_size, leverage, channel_name):
         self.trade_id=trade_id
         self.symbol=symbol
         self.direction=direction.upper()
-        self.avg_entry=Decimal(str(avg_entry))
+        self.original_entry=Decimal(str(original_entry))  # CRITICAL: Original entry for pyramid calculations
+        self.avg_entry=Decimal(str(avg_entry))  # Current average entry
         self.pos_size=Decimal(str(position_size))
         self.leverage=int(leverage)
         self.channel_name=channel_name
@@ -66,7 +67,8 @@ class PyramidManager:
         while self._running and self._adds < PYR_MAX_ADDS:
             try:
                 mark = await self._mark()
-                gain = pnl_pct(self.direction, self.avg_entry, mark)
+                # CRITICAL: Use original entry for pyramid calculations, not average entry
+                gain = pnl_pct(self.direction, self.original_entry, mark)
 
                 for lvl in PYR_LEVELS:
                     trig = Decimal(str(lvl["trigger"]))

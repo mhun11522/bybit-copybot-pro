@@ -51,6 +51,7 @@ class TradeFSM:
         self.trade_id = f"{sig['symbol']}-{sig['direction']}-{int(abs(hash(str(sig)))%1e8)}"
         self.position_size = Decimal("0")
         self.avg_entry = None
+        self.original_entry = Decimal(str(sig["entries"][0]))  # CRITICAL: Store original entry for pyramid calculations
         self._tasks = []  # Track background tasks to avoid recursive cancellation
         self.position_filled = asyncio.Event()  # WebSocket event for fill detection
         self.ws_position_data = None  # Store position data from WebSocket
@@ -459,12 +460,12 @@ class TradeFSM:
             oco = OCOManager(self.trade_id, self.sig["symbol"], self.sig["direction"], 
                             self.sig["channel_name"], self.sig.get("channel_id"))
             trail = TrailingStopManager(self.trade_id, self.sig["symbol"], self.sig["direction"], 
-                                       self.avg_entry, self.position_size, self.sig["channel_name"])
+                                       self.original_entry, self.avg_entry, self.position_size, self.sig["channel_name"])
             hedge = HedgeReentryManager(self.trade_id, self.sig["symbol"], self.sig["direction"], 
                                        self.avg_entry, self.position_size, self.sig["leverage"], 
                                        self.sig["channel_name"])
             pyr = PyramidManager(self.trade_id, self.sig["symbol"], self.sig["direction"], 
-                                self.avg_entry, self.position_size, self.sig["leverage"], 
+                                self.original_entry, self.avg_entry, self.position_size, self.sig["leverage"], 
                                 self.sig["channel_name"])
             tp2be = TP2BreakEvenManager(self.trade_id, self.sig["symbol"], self.sig["direction"], 
                                         self.avg_entry, self.sig["channel_name"])

@@ -4,8 +4,14 @@ import time
 import hmac
 import hashlib
 from typing import Callable, Dict, Optional
-import websockets
 from app.config.settings import BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_ENDPOINT, BYBIT_RECV_WINDOW
+
+try:
+    import websockets
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    print("⚠️  WebSocket support not available - install websockets package for real-time updates")
 
 class BybitWebSocket:
     """
@@ -17,6 +23,8 @@ class BybitWebSocket:
         # Determine WebSocket endpoint from REST endpoint
         if "testnet" in BYBIT_ENDPOINT:
             self.ws_url = "wss://stream-testnet.bybit.com/v5/private"
+        elif "demo" in BYBIT_ENDPOINT:
+            self.ws_url = "wss://stream-demo.bybit.com/v5/private"
         else:
             self.ws_url = "wss://stream.bybit.com/v5/private"
         
@@ -56,12 +64,21 @@ class BybitWebSocket:
     
     async def connect(self):
         """Connect to Bybit WebSocket and authenticate"""
+        if not WEBSOCKETS_AVAILABLE:
+            print("❌ WebSocket not available - install websockets package")
+            return False
+            
         try:
             print(f"🔌 Connecting to Bybit WebSocket: {self.ws_url}")
             self.ws = await websockets.connect(self.ws_url, ping_interval=None)
             print("✅ Bybit WebSocket connected")
             
-            # Authenticate
+            # Skip authentication for demo trading (not supported)
+            if "demo" in BYBIT_ENDPOINT:
+                print("ℹ️  Demo trading - skipping WebSocket authentication (not supported)")
+                return True
+            
+            # Authenticate for testnet/mainnet
             auth_payload = self._generate_auth_signature()
             print(f"🔐 Sending auth: {auth_payload}")  # Debug log
             await self.ws.send(json.dumps(auth_payload))

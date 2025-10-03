@@ -262,7 +262,8 @@ class PositionManager:
         """Clean up expired or stale positions."""
         try:
             # Get all active trades from database
-            async with get_db_connection() as db:
+            db = await get_db_connection()
+            async with db:
                 cursor = await db.execute("""
                     SELECT trade_id, symbol, created_at 
                     FROM active_trades 

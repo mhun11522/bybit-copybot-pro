@@ -11,9 +11,9 @@ if not os.getenv("TELEGRAM_API_ID"):
 if not os.getenv("TELEGRAM_API_HASH"):
     os.environ["TELEGRAM_API_HASH"] = "6e60321cbb996b499b6a370af62342de"
 if not os.getenv("BYBIT_API_KEY"):
-    os.environ["BYBIT_API_KEY"] = "ZLk18Hv2uM6EkJGce7"
+    os.environ["BYBIT_API_KEY"] = "Oh5e4BWjjTLIr5Lq2l"
 if not os.getenv("BYBIT_API_SECRET"):
-    os.environ["BYBIT_API_SECRET"] = "XbMCBIlE6DosgDMLRvod014y4inqtXBtVzmr"
+    os.environ["BYBIT_API_SECRET"] = "AxiPhPnxkhMxFKpA1XuIs1jukOoAp5GfzkrK"
 
 # Re-export from app.settings
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Stockholm")
@@ -22,7 +22,7 @@ TELEGRAM_SESSION = os.getenv("TELEGRAM_SESSION", "bybit_copybot_session")
 TELEGRAM_API_ID  = int(os.getenv("TELEGRAM_API_ID", "0"))
 TELEGRAM_API_HASH= os.getenv("TELEGRAM_API_HASH", "")
 
-BYBIT_ENDPOINT   = os.getenv("BYBIT_ENDPOINT", "https://api.bybit.com")
+BYBIT_ENDPOINT   = os.getenv("BYBIT_ENDPOINT", "https://api-demo.bybit.com")
 BYBIT_API_KEY    = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 BYBIT_RECV_WINDOW= os.getenv("BYBIT_RECV_WINDOW", "30000")

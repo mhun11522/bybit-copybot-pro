@@ -62,7 +62,7 @@ class SymbolRegistry:
         try:
             client = await self._get_bybit_client()
             
-            # Fetch all USDT perp symbols
+            # Fetch all linear (perpetual) symbols
             result = await client.instruments("linear", "")
             
             if result.get("retCode") != 0:
@@ -73,10 +73,13 @@ class SymbolRegistry:
             
             for instrument in instruments:
                 symbol = instrument.get("symbol", "")
-                if symbol.endswith("USDT") and instrument.get("status") == "Trading":
+                status = instrument.get("status", "")
+                
+                # Accept all trading symbols, not just USDT
+                if status == "Trading":
                     symbols[symbol] = SymbolInfo(symbol, instrument)
             
-            system_logger.info(f"Fetched {len(symbols)} USDT perp symbols")
+            system_logger.info(f"Fetched {len(symbols)} trading symbols")
             return symbols
             
         except Exception as e:

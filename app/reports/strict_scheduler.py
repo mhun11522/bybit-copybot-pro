@@ -154,7 +154,8 @@ class StrictReportScheduler:
     async def _get_daily_report_data(self) -> Dict[str, Any]:
         """Get daily report data from database."""
         try:
-            async with get_db_connection() as db:
+            db = await get_db_connection()
+            async with db:
                 # Get today's date
                 today = datetime.now(self.timezone).date()
                 
@@ -222,7 +223,8 @@ class StrictReportScheduler:
     async def _get_weekly_report_data(self) -> Dict[str, Any]:
         """Get weekly report data from database."""
         try:
-            async with get_db_connection() as db:
+            db = await get_db_connection()
+            async with db:
                 # Get this week's date range
                 now = datetime.now(self.timezone)
                 week_start = now - timedelta(days=now.weekday())

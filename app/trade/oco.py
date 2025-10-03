@@ -50,25 +50,67 @@ class OCOManager:
             return False, False
 
     async def _calculate_pnl(self, exit_price: Decimal) -> float:
-        """Calculate realized PnL based on position and exit price."""
+        """Calculate realized PnL based on initial margin (IM) and price movement."""
         try:
             pos = await self.bybit.positions(CATEGORY, self.symbol)
             if pos.get("result", {}).get("list"):
                 position = pos["result"]["list"][0]
                 size = Decimal(str(position.get("size", "0")))
                 avg_price = Decimal(str(position.get("avgPrice", "0")))
+                leverage = Decimal(str(position.get("leverage", "1")))
                 
-                if size > 0:
-                    # Calculate PnL based on direction
+                if size > 0 and avg_price > 0:
+                    # Calculate price percentage change
                     if self.direction == "BUY":
-                        pnl = (exit_price - avg_price) * size
+                        price_pct = (exit_price - avg_price) / avg_price
                     else:  # SELL
-                        pnl = (avg_price - exit_price) * size
+                        price_pct = (avg_price - exit_price) / avg_price
+                    
+                    # Calculate initial margin (IM) = (position_size * entry_price) / leverage
+                    initial_margin = (size * avg_price) / leverage
+                    
+                    # Calculate PnL based on IM and price percentage
+                    # This gives the actual USDT profit/loss, not the inflated amount
+                    pnl = initial_margin * price_pct
+                    
                     return float(pnl)
             return 0.0
         except Exception as e:
             print(f"Error calculating PnL: {e}")
             return 0.0
+
+    async def _calculate_result_with_leverage(self, exit_price: Decimal) -> tuple[float, float]:
+        """Calculate result percentage and USDT amount including leverage."""
+        try:
+            pos = await self.bybit.positions(CATEGORY, self.symbol)
+            if pos.get("result", {}).get("list"):
+                position = pos["result"]["list"][0]
+                size = Decimal(str(position.get("size", "0")))
+                avg_price = Decimal(str(position.get("avgPrice", "0")))
+                leverage = Decimal(str(position.get("leverage", "1")))
+                
+                if size > 0 and avg_price > 0:
+                    # Calculate price percentage change
+                    if self.direction == "BUY":
+                        price_pct = (exit_price - avg_price) / avg_price
+                    else:  # SELL
+                        price_pct = (avg_price - exit_price) / avg_price
+                    
+                    # Calculate initial margin (IM) = (position_size * entry_price) / leverage
+                    initial_margin = (size * avg_price) / leverage
+                    
+                    # Calculate PnL based on IM and price percentage
+                    pnl_usdt = float(initial_margin * price_pct)
+                    
+                    # Calculate percentage including leverage effect
+                    # This shows the actual return on the initial margin
+                    result_pct = float(price_pct * 100)
+                    
+                    return result_pct, pnl_usdt
+            return 0.0, 0.0
+        except Exception as e:
+            print(f"Error calculating result with leverage: {e}")
+            return 0.0, 0.0
 
     async def _close_trade(self, exit_type: str, exit_price: str = "0"):
         """Close the trade in the database with PnL calculation."""

@@ -70,7 +70,8 @@ class BybitClient:
         self.http = httpx.AsyncClient(
             base_url=BYBIT_ENDPOINT, 
             timeout=20.0,
-            trust_env=False  # Don't read proxy from environment
+            trust_env=False,  # Don't read proxy from environment
+            follow_redirects=True  # Follow 301/302 redirects
         )
         self._ts_offset_ms = 0
         self._last_sync = 0.0
@@ -326,3 +327,11 @@ class BybitClient:
         r = await self.http.post("/v5/position/trading-stop", headers=_headers(body), content=body_str)
         r.raise_for_status()
         return _check_response(r.json())
+    
+    async def get_ticker(self, symbol: str, category: str = "linear"):
+        """Get ticker data for a symbol."""
+        params = {
+            "category": category,
+            "symbol": symbol
+        }
+        return await self._get_auth("/v5/market/tickers", params)
