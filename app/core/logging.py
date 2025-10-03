@@ -5,7 +5,7 @@ import uuid
 import traceback
 from datetime import datetime
 from typing import Dict, Any, Optional
-from app.core.retcodes import MAP
+# Removed retcodes import - no longer needed
 
 class StructuredLogger:
     """Structured JSON logger with traceId support."""
@@ -56,8 +56,8 @@ class StructuredLogger:
         self.info(f"Trade event: {event_type}", trade_data)
     
     def bybit_error(self, error_code: int, operation: str, data: Dict[str, Any] = None):
-        """Log Bybit API error with mapping."""
-        error_message = MAP.get(error_code, f"Unknown error {error_code}")
+        """Log Bybit API error."""
+        error_message = f"Bybit API error {error_code}"
         error_data = {
             "error_code": error_code,
             "error_message": error_message,

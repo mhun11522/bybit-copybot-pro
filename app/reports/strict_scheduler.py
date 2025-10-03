@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Tuple
 from decimal import Decimal
 from app.core.strict_config import STRICT_CONFIG
 from app.core.logging import system_logger
-from app.telegram.swedish_templates import get_swedish_templates
+from app.telegram.swedish_templates_v2 import get_swedish_templates
 from app.telegram.output import send_message
 from app.storage.db import get_db_connection
 

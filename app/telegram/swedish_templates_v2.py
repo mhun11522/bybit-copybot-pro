@@ -281,3 +281,8 @@ class SwedishTemplatesV2:
 📊 Symbol: {symbol}
 
 ⏳ Försöker ny entry efter SL"""
+
+# Global function to get templates instance
+def get_swedish_templates():
+    """Get Swedish templates instance."""
+    return SwedishTemplatesV2()

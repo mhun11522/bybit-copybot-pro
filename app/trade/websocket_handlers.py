@@ -8,13 +8,13 @@ from decimal import Decimal
 from typing import Dict, Any
 from app.core.logging import system_logger
 from app.telegram.output import send_message
-from app.telegram.swedish_templates import SwedishTemplates
+from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
 
 class WebSocketTradeHandlers:
     """Handlers for WebSocket trade events."""
     
     def __init__(self):
-        self.templates = SwedishTemplates()
+        self.templates = SwedishTemplatesV2()
         self.active_trades: Dict[str, Dict[str, Any]] = {}
     
     async def handle_execution(self, execution_data: Dict[str, Any]):

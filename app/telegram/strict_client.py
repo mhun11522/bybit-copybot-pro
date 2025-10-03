@@ -8,7 +8,7 @@ from app.core.signal_blocking import is_signal_blocked
 from app.core.confirmation_gate import get_confirmation_gate
 from app.core.strict_fsm import TradeFSM
 from app.core.logging import system_logger, telegram_logger
-from app.telegram.swedish_templates import get_swedish_templates
+from app.telegram.swedish_templates_v2 import get_swedish_templates
 from app.telegram.output import send_message
 from datetime import datetime
 import asyncio
