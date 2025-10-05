@@ -15,7 +15,8 @@ class BreakevenStrategyV2:
         self.symbol = symbol
         self.direction = direction.upper()
         self.channel_name = channel_name
-        self.bybit = BybitClient()
+        from app.bybit.client import get_bybit_client
+        self.bybit = get_bybit_client()
         self.activated = False
         self.trigger_pct = Decimal("0.0015")  # 0.15% trigger for TP2
     

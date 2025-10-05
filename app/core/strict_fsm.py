@@ -8,6 +8,10 @@ from datetime import datetime
 from app.core.logging import system_logger, trade_logger
 from app.core.strict_config import STRICT_CONFIG
 from app.core.confirmation_gate import get_confirmation_gate
+from app.strategies.pyramid_v2 import PyramidStrategyV2
+from app.strategies.trailing_v2 import TrailingStopStrategyV2
+from app.strategies.hedge_v2 import HedgeStrategyV2
+from app.strategies.reentry_v2 import ReentryStrategyV2
 
 class TradeState(Enum):
     """Trade lifecycle states."""
@@ -35,6 +39,7 @@ class TradeFSM:
         self.exit_orders = []
         self.position_size = Decimal("0")
         self.entry_price = Decimal("0")
+        self.original_entry = Decimal("0")  # Store original entry for pyramid calculations
         self.current_pnl = Decimal("0")
         self.pyramid_level = 0
         self.trailing_active = False
@@ -42,6 +47,12 @@ class TradeFSM:
         self.reentry_count = 0
         self.error_count = 0
         self.max_errors = 3
+        
+        # Initialize strategies
+        self.pyramid_strategy = None
+        self.trailing_strategy = None
+        self.hedge_strategy = None
+        self.reentry_strategy = None
         
         # State transition handlers
         self._handlers = {
@@ -200,14 +211,37 @@ class TradeFSM:
     async def _handle_entry_filled(self) -> bool:
         """Handle ENTRY_FILLED state - monitor for fills."""
         try:
+            # Initialize timeout counter if not exists
+            if not hasattr(self, '_fill_check_count'):
+                self._fill_check_count = 0
+                self._max_fill_checks = 30  # 30 seconds timeout for Market orders
+            
             # Check for position
             position = await self._get_position()
             if position and float(position.get('size', 0)) > 0:
                 self.entry_price = Decimal(str(position.get('avgPrice', 0)))
+                self.original_entry = self.entry_price  # Store for pyramid calculations
+                
+                # Initialize strategies now that we have entry price
+                self._initialize_strategies()
+                
+                system_logger.info(f"Position filled for {self.signal_data['symbol']}: {position.get('size')} contracts at {self.entry_price}")
                 await self._transition_to(TradeState.TP_SL_PLACED)
                 return True
             else:
-                # Wait for fill
+                # Increment check counter
+                self._fill_check_count += 1
+                
+                # Check if timeout reached
+                if self._fill_check_count >= self._max_fill_checks:
+                    system_logger.warning(f"Entry fill timeout for {self.signal_data['symbol']} after {self._max_fill_checks} seconds")
+                    await self._transition_to(TradeState.ERROR)
+                    return False
+                
+                # Wait for fill (only log every 10 checks to reduce spam)
+                if self._fill_check_count % 10 == 0:
+                    system_logger.debug(f"Waiting for fill for {self.signal_data['symbol']} (check {self._fill_check_count}/{self._max_fill_checks})")
+                
                 await asyncio.sleep(1)
                 return True
                 
@@ -220,25 +254,51 @@ class TradeFSM:
         try:
             gate = get_confirmation_gate()
             
+            # Get TP/SL values from signal data
+            tps = self.signal_data.get('tps', [])
+            sl = self.signal_data.get('sl')
+            
+            system_logger.info(f"Placing TP/SL orders for {self.signal_data['symbol']}: TPs={tps}, SL={sl}")
+            
+            # Convert TP values to Decimal
+            tp_decimals = []
+            if tps:
+                for tp in tps:
+                    if tp and tp != "DEFAULT_TP":
+                        tp_decimals.append(Decimal(str(tp)))
+                    else:
+                        tp_decimals.append("DEFAULT_TP")
+            else:
+                tp_decimals = ["DEFAULT_TP"]  # Use default TP if none specified
+            
+            # Convert SL to Decimal
+            sl_decimal = None
+            if sl and sl != "DEFAULT_SL":
+                sl_decimal = Decimal(str(sl))
+            else:
+                sl_decimal = "DEFAULT_SL"  # Use default SL if none specified
+            
             # Place TP/SL orders through confirmation gate
             success = await gate.place_exit_orders(
                 self.signal_data['symbol'],
                 self.signal_data['direction'],
                 self.position_size,
-                [Decimal(tp) for tp in self.signal_data.get('tps', [])],
-                Decimal(str(self.signal_data.get('sl', 0))) if self.signal_data.get('sl') else None,
+                tp_decimals,
+                sl_decimal,
                 self.signal_data['channel_name']
             )
             
             if success:
+                system_logger.info(f"TP/SL orders placed successfully for {self.signal_data['symbol']}")
                 await self._transition_to(TradeState.RUNNING)
             else:
+                system_logger.error(f"Failed to place TP/SL orders for {self.signal_data['symbol']}")
                 await self._transition_to(TradeState.ERROR)
             
             return success
             
         except Exception as e:
-            system_logger.error(f"TP/SL placed handler error: {e}", exc_info=True)
+            system_logger.error(f"TP/SL placed handler error for {self.signal_data['symbol']}: {e}", exc_info=True)
             return False
     
     async def _handle_running(self) -> bool:
@@ -403,9 +463,10 @@ class TradeFSM:
         return True
     
     async def _calculate_position_size(self) -> Decimal:
-        """Calculate position size based on risk management."""
+        """Calculate position size based on risk management using proper contract-based logic."""
         try:
             from app.core.symbol_registry import get_symbol_registry
+            from app.core.position_calculator import PositionCalculator
             from app.bybit.client import BybitClient
             
             # Get account balance
@@ -430,24 +491,6 @@ class TradeFSM:
                 system_logger.error(f"Invalid balance: {balance}")
                 return Decimal("0")
             
-            # Use fixed IM target of 20 USDT as per client requirements
-            position_value = STRICT_CONFIG.im_target
-            
-            # Apply channel risk multiplier to IM
-            channel_name = self.signal_data.get('channel_name', 'DEFAULT')
-            from app.config.trading_config import get_channel_risk_multiplier
-            risk_multiplier = Decimal(str(get_channel_risk_multiplier(channel_name)))
-            position_value = position_value * risk_multiplier
-            
-            # Ensure minimum notional per entry (for dual entries, each needs 5 USDT minimum)
-            entries_count = len(self.signal_data.get('entries', [1]))
-            min_notional_per_entry = Decimal("5.0")  # Bybit minimum
-            min_total_notional = min_notional_per_entry * entries_count
-            position_value = max(position_value, min_total_notional)
-            
-            # Apply maximum position size limit
-            position_value = min(position_value, STRICT_CONFIG.max_position_size_usdt)
-            
             # Get entry price (use first entry)
             entry_price = self.signal_data['entries'][0]
             if entry_price == "MARKET":
@@ -467,88 +510,37 @@ class TradeFSM:
             else:
                 entry_price = Decimal(str(entry_price))
             
-            # Calculate position size in contracts
-            # position_value is the IM target (20 USDT), but we need to account for leverage
-            # With leverage, we can control more contracts with the same margin
+            # Get leverage
             leverage = self.signal_data.get('leverage', Decimal('10'))
-            # Ensure leverage is Decimal type
             if isinstance(leverage, (int, float)):
                 leverage = Decimal(str(leverage))
-            # Calculate notional value (position_value * leverage)
-            notional_value = position_value * leverage
-            # Calculate position size in contracts
-            position_size = notional_value / entry_price
             
-            # Get symbol metadata for proper quantization
+            # Get channel risk multiplier
+            channel_name = self.signal_data.get('channel_name', 'DEFAULT')
+            from app.config.trading_config import get_channel_risk_multiplier
+            risk_multiplier = Decimal(str(get_channel_risk_multiplier(channel_name)))
+            
+            # Get symbol metadata
             symbol = self.signal_data['symbol']
             registry = await get_symbol_registry()
             symbol_info = await registry.get_symbol_info(symbol)
             
-            if symbol_info:
-                # Quantize to step size
-                position_size_decimal = symbol_info.quantize_qty(Decimal(str(position_size)))
-                
-                # Check minimum quantity
-                if position_size_decimal < symbol_info.min_qty:
-                    system_logger.warning(f"Position size {position_size_decimal} below minimum {symbol_info.min_qty} for {symbol}")
-                    # Use minimum quantity instead
-                    position_size_decimal = symbol_info.min_qty
-                
-                # Check maximum quantity
-                if position_size_decimal > symbol_info.max_qty:
-                    system_logger.warning(f"Position size {position_size_decimal} exceeds maximum {symbol_info.max_qty} for {symbol}")
-                    # Use maximum quantity instead
-                    position_size_decimal = symbol_info.max_qty
-                
-                # Check minimum notional value
-                notional_value = position_size_decimal * entry_price
-                if notional_value < symbol_info.min_notional:
-                    system_logger.warning(f"Notional value {notional_value} below minimum {symbol_info.min_notional} for {symbol}")
-                    # Adjust to meet minimum notional - round UP to ensure we exceed minimum
-                    position_size_decimal = symbol_info.min_notional / entry_price
-                    # Round UP to next valid step to ensure notional exceeds minimum
-                    from decimal import ROUND_UP
-                    position_size_decimal = position_size_decimal.quantize(symbol_info.step_size, rounding=ROUND_UP)
-                    
-                    # Verify the adjustment worked
-                    final_notional = position_size_decimal * entry_price
-                    if final_notional < symbol_info.min_notional:
-                        # If still below minimum, add one more step
-                        position_size_decimal += symbol_info.step_size
-                        final_notional = position_size_decimal * entry_price
-                        system_logger.info(f"Adjusted position size to {position_size_decimal}, notional: {final_notional}")
-                
-                # Final validation
-                if not symbol_info.validate_qty(position_size_decimal):
-                    system_logger.error(f"Position size {position_size_decimal} failed validation for {symbol}")
-                    return Decimal("0")
-                
-                if not symbol_info.validate_notional(position_size_decimal * entry_price):
-                    system_logger.error(f"Notional value {position_size_decimal * entry_price} failed validation for {symbol}")
-                    return Decimal("0")
-                
-                system_logger.info(f"Calculated position size: {position_size_decimal} for {symbol}", {
-                    'balance': float(balance),
-                    'risk_multiplier': float(risk_multiplier),
-                    'position_value': float(position_value),
-                    'leverage': float(leverage),
-                    'notional_value': float(notional_value),
-                    'entry_price': float(entry_price),
-                    'min_qty': float(symbol_info.min_qty),
-                    'min_notional': float(symbol_info.min_notional),
-                    'step_size': float(symbol_info.step_size)
-                })
-                
-                return position_size_decimal
-            else:
-                # Fallback to old logic if symbol not found
-                min_size = Decimal("0.001")
-                if position_size < min_size:
-                    return min_size
-                
-                return Decimal(str(position_size)).quantize(
-                    Decimal('0.001'), rounding=ROUND_DOWN
-                )
+            if not symbol_info:
+                system_logger.error(f"Symbol info not found for {symbol}")
+                return Decimal("0")
+            
+            # Use the new position calculator
+            position_size, debug_info = await PositionCalculator.calculate_contract_qty(
+                symbol=symbol,
+                wallet_balance=balance,
+                risk_pct=STRICT_CONFIG.risk_pct,
+                leverage=leverage,
+                entry_price=entry_price,
+                symbol_info=symbol_info,
+                channel_risk_multiplier=risk_multiplier
+            )
+            
+            return position_size
             
         except Exception as e:
             system_logger.error(f"Position size calculation failed: {e}", exc_info=True)
@@ -558,25 +550,49 @@ class TradeFSM:
         """Set leverage operation for confirmation gate."""
         try:
             from app.bybit.client import BybitClient
+            from app.core.symbol_registry import get_symbol_registry
             
             client = BybitClient()
             symbol = self.signal_data['symbol']
             leverage = self.signal_data['leverage']
             
-            # Set leverage on Bybit
-            result = await client.set_leverage(
-                category="linear",
-                symbol=symbol,
-                buy_leverage=str(leverage),
-                sell_leverage=str(leverage)
-            )
+            # Check symbol's maximum leverage limit
+            registry = await get_symbol_registry()
+            symbol_info = await registry.get_symbol_info(symbol)
             
-            if result.get('retCode') == 0:
-                system_logger.info(f"Leverage set successfully: {symbol} = {leverage}x")
-                return result
-            else:
-                system_logger.error(f"Failed to set leverage: {result}")
-                return result
+            if symbol_info:
+                max_leverage = symbol_info.max_leverage
+                if leverage > max_leverage:
+                    system_logger.warning(f"Leverage {leverage}x exceeds max {max_leverage}x for {symbol}, adjusting")
+                    leverage = max_leverage
+                    # Update signal data with adjusted leverage
+                    self.signal_data['leverage'] = leverage
+            
+            # Set leverage on Bybit with fallback mechanism
+            fallback_leverages = [leverage, 10, 5, 3, 1]  # Try progressively lower leverage
+            
+            for attempt_leverage in fallback_leverages:
+                result = await client.set_leverage(
+                    category="linear",
+                    symbol=symbol,
+                    buy_leverage=str(attempt_leverage),
+                    sell_leverage=str(attempt_leverage)
+                )
+                
+                if result.get('retCode') == 0:
+                    if attempt_leverage != leverage:
+                        system_logger.warning(f"Leverage adjusted from {leverage}x to {attempt_leverage}x for {symbol}")
+                        # Update signal data with adjusted leverage
+                        self.signal_data['leverage'] = attempt_leverage
+                    system_logger.info(f"Leverage set successfully: {symbol} = {attempt_leverage}x")
+                    return result
+                else:
+                    system_logger.warning(f"Failed to set {attempt_leverage}x leverage for {symbol}: {result.get('retMsg', 'Unknown error')}")
+                    continue
+            
+            # If all attempts failed
+            system_logger.error(f"Failed to set any leverage for {symbol} after trying all fallback values")
+            return result
                 
         except Exception as e:
             system_logger.error(f"Leverage setting error: {e}", exc_info=True)
@@ -588,8 +604,52 @@ class TradeFSM:
     
     async def _get_position(self) -> Optional[Dict[str, Any]]:
         """Get current position from Bybit."""
-        # This would call Bybit to get position
-        return None  # Placeholder
+        try:
+            from app.bybit.client import get_bybit_client
+            client = get_bybit_client()
+            
+            # Initialize position check counter if not exists
+            if not hasattr(self, '_position_check_count'):
+                self._position_check_count = 0
+            
+            # Get position from Bybit
+            result = await client.get_position(
+                category="linear",
+                symbol=self.signal_data['symbol']
+            )
+            
+            if result.get('retCode') == 0:
+                positions = result.get('result', {}).get('list', [])
+                if positions:
+                    position = positions[0]
+                    size = float(position.get('size', 0))
+                    if size > 0:  # Only return if we have a position
+                        # Only log positions that we're actively managing (not existing positions)
+                        # Check if we have a trade_id or are in an active state
+                        if hasattr(self, 'trade_id') and self.trade_id:
+                            # Only log once per position to avoid spam
+                            if not hasattr(self, '_position_logged') or not self._position_logged:
+                                system_logger.info(f"Position found for {self.signal_data['symbol']}: {size} contracts")
+                                self._position_logged = True
+                        return position
+                    else:
+                        # Only log every 10th check to reduce spam
+                        self._position_check_count += 1
+                        if self._position_check_count % 10 == 0:
+                            system_logger.debug(f"No position found for {self.signal_data['symbol']} (check {self._position_check_count})")
+                else:
+                    # Only log every 10th check to reduce spam
+                    self._position_check_count += 1
+                    if self._position_check_count % 10 == 0:
+                        system_logger.debug(f"No positions in result for {self.signal_data['symbol']} (check {self._position_check_count})")
+            else:
+                system_logger.warning(f"Position API error for {self.signal_data['symbol']}: {result.get('retMsg', 'Unknown error')}")
+            
+            return None
+            
+        except Exception as e:
+            system_logger.error(f"Failed to get position for {self.signal_data['symbol']}: {e}", exc_info=True)
+            return None
     
     async def _check_tp_hit(self) -> bool:
         """Check if TP was hit."""
@@ -601,15 +661,112 @@ class TradeFSM:
     
     async def _check_hedge_trigger(self) -> bool:
         """Check if hedge should be triggered."""
-        return False  # Placeholder
+        if not self.hedge_strategy:
+            return False
+            
+        # If hedge is already activated, don't check again
+        if self.hedge_strategy.activated:
+            return False
+            
+        try:
+            # Get current price from position
+            position = await self._get_position()
+            if not position:
+                # No position found - transition to CLOSED state to stop hedge checks
+                system_logger.warning(f"No position found for {self.signal_data['symbol']} - transitioning to CLOSED")
+                await self._transition_to(TradeState.CLOSED)
+                return False
+                
+            current_price = Decimal(str(position.get('markPrice', 0)))
+            if current_price > 0:
+                activated = await self.hedge_strategy.check_and_activate(current_price, self.original_entry)
+                if activated:
+                    system_logger.info(f"Hedge strategy activated for {self.signal_data['symbol']}")
+                    return True
+        except Exception as e:
+            system_logger.error(f"Hedge trigger check error: {e}", exc_info=True)
+        
+        return False
     
+    def _initialize_strategies(self):
+        """Initialize all trading strategies."""
+        try:
+            channel_name = self.signal_data.get('channel_name', 'Unknown')
+            
+            # Initialize Pyramid Strategy
+            self.pyramid_strategy = PyramidStrategyV2(
+                trade_id=self.trade_id,
+                symbol=self.signal_data['symbol'],
+                direction=self.signal_data['direction'],
+                original_entry=self.original_entry,
+                channel_name=channel_name
+            )
+            
+            # Initialize Trailing Stop Strategy
+            self.trailing_strategy = TrailingStopStrategyV2(
+                trade_id=self.trade_id,
+                symbol=self.signal_data['symbol'],
+                direction=self.signal_data['direction'],
+                channel_name=channel_name
+            )
+            
+            # Initialize Hedge Strategy
+            self.hedge_strategy = HedgeStrategyV2(
+                trade_id=self.trade_id,
+                symbol=self.signal_data['symbol'],
+                direction=self.signal_data['direction'],
+                original_entry=self.original_entry,
+                channel_name=channel_name
+            )
+            
+            # Initialize Re-entry Strategy
+            self.reentry_strategy = ReentryStrategyV2(
+                trade_id=self.trade_id,
+                symbol=self.signal_data['symbol'],
+                direction=self.signal_data['direction'],
+                channel_name=channel_name
+            )
+            
+            system_logger.info(f"Strategies initialized for {self.signal_data['symbol']}")
+            
+        except Exception as e:
+            system_logger.error(f"Strategy initialization error: {e}", exc_info=True)
+
     async def _check_pyramid_levels(self):
         """Check and handle pyramid levels."""
-        pass  # Placeholder
+        if not self.pyramid_strategy:
+            return
+            
+        try:
+            # Get current price from position
+            position = await self._get_position()
+            if position:
+                current_price = Decimal(str(position.get('markPrice', 0)))
+                if current_price > 0:
+                    activated = await self.pyramid_strategy.check_and_activate(current_price)
+                    if activated:
+                        self.pyramid_level += 1
+                        system_logger.info(f"Pyramid level {self.pyramid_level} activated for {self.signal_data['symbol']}")
+        except Exception as e:
+            system_logger.error(f"Pyramid check error: {e}", exc_info=True)
     
     async def _check_trailing_stop(self):
         """Check and handle trailing stop."""
-        pass  # Placeholder
+        if not self.trailing_strategy:
+            return
+            
+        try:
+            # Get current price from position
+            position = await self._get_position()
+            if position:
+                current_price = Decimal(str(position.get('markPrice', 0)))
+                if current_price > 0:
+                    updated = await self.trailing_strategy.check_and_update(current_price, self.original_entry)
+                    if updated and not self.trailing_active:
+                        self.trailing_active = True
+                        system_logger.info(f"Trailing stop activated for {self.signal_data['symbol']}")
+        except Exception as e:
+            system_logger.error(f"Trailing stop check error: {e}", exc_info=True)
     
     async def _move_to_breakeven(self):
         """Move SL to breakeven after TP2."""
@@ -621,7 +778,32 @@ class TradeFSM:
     
     async def _attempt_reentry(self) -> bool:
         """Attempt re-entry after SL."""
-        return False  # Placeholder
+        if not self.reentry_strategy:
+            return False
+            
+        try:
+            # Get current market price
+            from app.bybit.client import get_bybit_client
+            client = get_bybit_client()
+            
+            # Get ticker for current price
+            ticker_result = await client.get_ticker("linear", self.signal_data['symbol'])
+            if ticker_result.get('retCode') == 0:
+                ticker = ticker_result.get('result', {}).get('list', [])
+                if ticker:
+                    current_price = Decimal(str(ticker[0].get('lastPrice', 0)))
+                    if current_price > 0:
+                        success = await self.reentry_strategy.attempt_reentry(current_price)
+                        if success:
+                            system_logger.info(f"Re-entry attempted for {self.signal_data['symbol']} at {current_price}")
+                            return True
+                        else:
+                            system_logger.info(f"Re-entry conditions not met for {self.signal_data['symbol']}")
+            
+        except Exception as e:
+            system_logger.error(f"Re-entry attempt error: {e}", exc_info=True)
+        
+        return False
     
     async def _record_trade_completion(self):
         """Record trade completion in database."""

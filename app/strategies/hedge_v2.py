@@ -1,7 +1,7 @@
 """Hedge strategy implementation with exact client requirements."""
 
 from decimal import Decimal
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from app.bybit.client import BybitClient
 from app.core.logging import system_logger
 from app.telegram.output import send_message
@@ -10,12 +10,14 @@ from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
 class HedgeStrategyV2:
     """Hedge strategy: Opens reverse position at -2% adverse move."""
     
-    def __init__(self, trade_id: str, symbol: str, direction: str, channel_name: str):
+    def __init__(self, trade_id: str, symbol: str, direction: str, original_entry: Decimal, channel_name: str):
         self.trade_id = trade_id
         self.symbol = symbol
         self.direction = direction.upper()
+        self.original_entry = original_entry
         self.channel_name = channel_name
-        self.bybit = BybitClient()
+        from app.bybit.client import get_bybit_client
+        self.bybit = get_bybit_client()
         self.activated = False
         self.trigger_pct = Decimal("2.0")  # -2% trigger
         self.hedge_size: Optional[Decimal] = None
@@ -24,6 +26,24 @@ class HedgeStrategyV2:
         """Check if hedge should be activated."""
         if self.activated:
             return True
+        
+        # First check if position still exists
+        try:
+            pos = await self.bybit.get_position("linear", self.symbol)
+            if not pos.get("result", {}).get("list"):
+                system_logger.warning(f"No position found for {self.symbol} - hedge check skipped")
+                return False
+            
+            position = pos["result"]["list"][0]
+            current_size = Decimal(str(position.get("size", "0")))
+            
+            if current_size <= 0:
+                system_logger.warning(f"Position size is 0 for {self.symbol} - hedge check skipped")
+                return False
+                
+        except Exception as e:
+            system_logger.error(f"Failed to check position for hedge: {e}")
+            return False
         
         # Calculate current loss percentage
         if self.direction == "BUY":
@@ -42,7 +62,7 @@ class HedgeStrategyV2:
         """Activate hedge by opening reverse position."""
         try:
             # Get current position size
-            pos = await self.bybit.positions("linear", self.symbol)
+            pos = await self.bybit.get_position("linear", self.symbol)
             if not pos.get("result", {}).get("list"):
                 system_logger.error(f"No position found for {self.symbol}")
                 return
@@ -101,7 +121,7 @@ class HedgeStrategyV2:
                 return
             
             # Get current position
-            pos = await self.bybit.positions("linear", self.symbol)
+            pos = await self.bybit.get_position("linear", self.symbol)
             if not pos.get("result", {}).get("list"):
                 return
             

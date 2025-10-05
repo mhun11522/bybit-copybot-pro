@@ -10,16 +10,16 @@ from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
 class ReentryStrategyV2:
     """Re-entry strategy: Attempts re-entries after SL hit (up to 3 attempts)."""
     
-    def __init__(self, trade_id: str, symbol: str, direction: str, original_entry: Decimal, channel_name: str):
+    def __init__(self, trade_id: str, symbol: str, direction: str, channel_name: str):
         self.trade_id = trade_id
         self.symbol = symbol
         self.direction = direction.upper()
-        self.original_entry = original_entry
         self.channel_name = channel_name
-        self.bybit = BybitClient()
+        from app.bybit.client import get_bybit_client
+        self.bybit = get_bybit_client()
         self.attempts = 0
         self.max_attempts = 3
-        self.last_entry_price = original_entry
+        self.last_entry_price = Decimal("0")
         self.entry_offset = Decimal("0.001")  # 0.1% offset for re-entries
     
     async def attempt_reentry(self, current_price: Decimal) -> bool:

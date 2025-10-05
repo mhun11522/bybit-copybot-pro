@@ -21,7 +21,8 @@ async def cleanup_old_orders():
     cutoff = datetime.now(TZ) - timedelta(days=MAX_ORDER_AGE_DAYS)
     cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
     
-    bybit = BybitClient()
+    from app.bybit.client import get_bybit_client
+    bybit = get_bybit_client()
     deleted_count = 0
     
     async with aiosqlite.connect(DB_PATH) as db:

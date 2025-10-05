@@ -1,0 +1,231 @@
+What My Bot Should Do – 2025-09-07
+
+Instructions for the bot.
+T G
+46
+70 36
+89 
+310
+
+High structure, security, it must not crash etc.
+
+it must be done in python 3.10 that is the only thing bybit accepts.
+
+i will fix a channel for you
+give info about groups etc.
+
+
+
+
+📌 Bot Functions and Complete Specification
+
+📨 Signal Handling
+• Receives Telegram signals containing entry, TP, and SL.
+• Supports all symbols (all USDT pairs).
+• If two entry prices are given in the signal → two limit orders are placed, split 50/50.
+• If only one entry price is given → two limit orders are placed: one at entry and one with ±0.1% offset (directional hedge).
+
+📈 Entry & Order Placement
+• Post-Only is always used for entry orders (maker).
+• Reduce-Only is always used for exit orders (TP/SL).
+• TP and SL are set exactly as in the signal (no adjustments).
+• If a signal lacks SL → it is automatically set at –2% from entry, and leverage is locked to 10x.
+
+📉 Stop Loss & Dynamics
+• Position size and SL are calculated dynamically based on account balance, risk percentage, IM, entry, and SL.
+• When TP2 is hit → SL is moved to breakeven + cost (0.0015%).
+• SL is then adjusted according to defined pyramid and trailing rules.
+
+🔀 Pyramid & Leverage Rules (stepwise ladder)
+• +1.5%: Check that IM is 20 USDT if any TP has been hit.
+• +2.3%: SL is moved to breakeven + costs.
+• +2.4%: Leverage is raised to max (up to 50x) and position recalculated.
+• +2.5%: IM increased to a total of 40 USDT and position recalculated.
+• +4%: IM increased to a total of 60 USDT and position recalculated.
+• +6%: IM increased to a total of 80 USDT and position recalculated.
+• +8.6%: IM increased to a total of 100 USDT and position recalculated.
+
+📊 Trailing Stop
+• At +6.1% profit, trailing stop is activated.
+• SL is placed 2.5% behind the highest price (or lowest for short).
+• The trailer then follows price movement continuously and updates dynamically.
+
+🔄 Hedge & Re-entry
+• If price moves –2% against the position:
+o A reverse trade opens in the opposite direction.
+o Size = 100% of the original position.
+o TP = original SL, SL = original entry.
+• After an SL hit:
+o The bot attempts re-entry with dual-limit up to 3 times.
+o After that, no more attempts until a new external signal arrives.
+
+📋 Risk & Capacity
+• Maximum 100 active trades simultaneously.
+• No daily/weekly loss stops halt the bot.
+• Base parameters:
+o Account: 401.2 USDT
+o Risk: 2% per trade
+o Initial IM: 20 USDT per trade
+
+📢 Telegram Reporting
+• Continuous updates for all events (signal, order, entry, TP, SL, hedge, pyramid, trailing, re-entry).
+• Daily summary: total number of trades, win rate, PnL, number of re-entries, hedges, and pyramid levels.
+• Weekly summary: same as above + top list of most profitable symbols.
+
+📡 Telegram Feed (connection)
+• Three sources (groups/channels) monitored (whitelist).
+• Only signals (entry, TP, SL) are processed, everything else ignored.
+• Data normalization (LONG/SHORT, tick-/step-adjustments).
+• Deduplication (hash + time window).
+• Signals are forwarded to your own private channel in standardized format.
+• Faulty signals are forwarded raw + error flag.
+
+📑 Telegram Messages – Standard (all steps)
+
+Signal Received & Copied – Swing
+✅ Signal received & copied
+🕒 Time: {{time}}
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+📈 Direction: {{direction}}
+📍 Type: Swing
+
+⚙️ Leverage: x6
+💰 IM: {{im}} USDT
+
+Signal Received & Copied – Dynamic
+✅ Signal received & copied
+🕒 Time: {{time}}
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+📈 Direction: {{direction}}
+
+💥 Entry: {{entry}}
+🎯 TP1: {{tp1}} ({{tp1_pct}}%)
+🎯 TP2: {{tp2}} ({{tp2_pct}}%)
+🎯 TP3: {{tp3}} ({{tp3_pct}}%)
+🎯 TP4: {{tp4}} ({{tp4_pct}}%)
+🚩 SL: {{sl}} ({{sl_pct}}%)
+
+⚙️ Leverage: Dynamic
+💰 IM: {{im}} USDT
+
+Signal Received & Copied – Fixed
+✅ Signal received & copied
+🕒 Time: {{time}}
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+📈 Direction: {{direction}}
+
+💥 Entry: {{entry}}
+🎯 TP1: {{tp1}} ({{tp1_pct}}%)
+🎯 TP2: {{tp2}} ({{tp2_pct}}%)
+🎯 TP3: {{tp3}} ({{tp3_pct}}%)
+🎯 TP4: {{tp4}} ({{tp4_pct}}%)
+🚩 SL: {{sl}} ({{sl_pct}}%)
+
+⚙️ Leverage: Fixed x10
+💰 IM: {{im}} USDT
+
+Order Placed – Swing/Dynamic/Fixed
+(Same template with correct block for each type, incl. ☑️ Post-Only | ☑️ Reduce-Only + 🔑 Order-ID)
+
+Position Opened – Swing/Dynamic/Fixed
+(Same template with respective data)
+
+ENTRY 1 & 2 TAKEN
+📌 ENTRY 1 TAKEN
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+
+💥 Entry: {{entry1}}
+💵 Quantity: {{quantity1}}
+💰 IM: {{im1}} USDT (IM total: {{im_total}} USDT)
+
+📌 ENTRY 2 TAKEN
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+
+💥 Entry: {{entry2}}
+💵 Quantity: {{quantity2}}
+💰 IM: {{im2}} USDT (IM total: {{im_total}} USDT)
+
+TAKE PROFIT TAKEN
+🎯 TAKE PROFIT {{index}} TAKEN
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+📈 Side: {{direction}}
+
+📍 TP{{index}}: {{price}}
+💵 Closed quantity: {{quantity}} ({{portion}}% of position)
+📊 Result: {{result_pct}} | {{result_usdt}} USDT
+
+PYRAMID TAKEN
+📈 PYRAMID {{level}} TAKEN
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+📈 Direction: {{direction}}
+
+💥 Price: {{price}} (+{{trigger_pct}}%)
+💵 Added quantity: {{quantity}}
+💰 IM added: +{{im}} USDT (IM total: {{im_total}} USDT)
+
+TRAILING STOP ACTIVATED
+🔄 TRAILING STOP ACTIVATED
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+📈 Direction: {{direction}}
+
+📍 Trigger: +{{trigger_pct}}%
+📍 Distance: {{distance_pct}}% behind price
+📍 New SL: {{new_sl}}
+
+BREAK-EVEN ADJUSTED
+⚖️ BREAK-EVEN ADJUSTED
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+
+📍 SL moved to: {{sl_moved}}
+
+HEDGE / REVERSAL EXECUTED
+🛡️ HEDGE / REVERSAL EXECUTED
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+
+📈 Previous position: {{old_side}} (closed)
+📉 New opposite position: {{new_side}}
+💥 Entry: {{entry}}
+
+⚙️ Leverage: {{leverage}}x
+💰 IM: {{im}} USDT
+
+RE-ENTRY EXECUTED
+♻️ RE-ENTRY EXECUTED
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+📈 Side: {{direction}}
+
+💥 Entry: {{entry}}
+⚙️ Leverage: {{leverage}}
+💰 IM: {{im}} USDT (IM total: {{im_total}} USDT)
+
+STOP LOSS HIT
+🚩 STOP LOSS HIT
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+📈 Side: {{direction}}
+
+📍 SL: {{sl}}
+💵 Closed quantity: {{quantity}} (100%)
+📊 Result: {{result_pct}} | {{result_usdt}} USDT
+
+🔁 Re-entry logic: activated – new signal taken on confirmed trend reversal
+
+POSITION CLOSED
+✅ POSITION CLOSED
+📢 From channel: {{source}}
+📊 Symbol: {{symbol}}
+
+💵 Closed quantity: {{quantity}} (100%)
+📍 Exit: {{price}}
+📊 Result: {{result_pct}} | {{result_usdt}} USDT

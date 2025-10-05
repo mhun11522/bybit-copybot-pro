@@ -15,7 +15,8 @@ class TrailingStopStrategyV2:
         self.symbol = symbol
         self.direction = direction.upper()
         self.channel_name = channel_name
-        self.bybit = BybitClient()
+        from app.bybit.client import get_bybit_client
+        self.bybit = get_bybit_client()
         self.armed = False
         self.trigger_pct = Decimal("6.1")  # 6.1% trigger
         self.trail_distance = Decimal("2.5")  # 2.5% behind price

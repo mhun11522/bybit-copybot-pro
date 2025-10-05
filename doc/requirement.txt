@@ -1,0 +1,722 @@
+Checklist
+
+
+I'm writing a comprehensive checklist. I assume you understand what it means in detail :D
+
+(for me who doesn't know programming, everything should be 100% working flawlessly :D)
+
+1 The first document I sent about "how the bot should work with all strategies" is the bot 100% like it?
+
+2 Sept 17, file fidde, are all the signals working flawlessly?
+
+3 reports everyday 08.00 sweden time, week saturday (day before monday) 22.00 sweden time
+(one mess / group one mess all izzus)
+
+4 Does the bot accept all symbols / crypto at 100%
+
+5 If Order not opened within 6 days, delete the signal
+(I know this one has many different times in the chat history, ensure ONE single solution)
+
+
+6 Appearance / structure, I hope and believe that for example all parameters are made on the top it says for example:
+api bybit, api telegram, groups etc
+My basic strategy etc
+This so that I can change the api myself in the future, add / remove groups....change % or money in my strategies :D
+
+
+7  re entre 3 times
+8 - Hedge  opend at minus 2% (-2%)
+
+9 tralingstop 6.1% search against the original document, here ALL Tp above 6.1% SHOULD remain
+
+10 Tomas, [2025-09-17 09:32]
+🔀 Pyramid & Leverage Rules (stepwise ladder)
+• +1.5%: Check that IM is 20 USDT if any TP has been hit.
+• +2.3%: SL is moved to breakeven + costs.
+• +2.4%: Leverage is raised to max (up to 50x) and position recalculated.
+• +2.5%: IM is raised to a total of 40 USDT and position recalculated.
+• +4%: IM is raised to a total of 60 USDT and position recalculated.
+• +6%: IM is raised to a total of 80 USDT and position recalculated.
+• +8.6%: IM is raised to a total of 100 USDT and position recalculated.
+
+Must calkyl fron orgonal entre!!!!  entre changes when % and money change, importent!!!
+
+
+
+11 Trailing Stop
+
+• At +6.1% profit, the trailing stop is activated.
+• SL (Stop Loss) is placed 2.5% behind the highest price (or the lowest for shorts).
+• The trailer then follows the price movement and updates continuously.
+• After +6.1%, only the trailing stop manages the position until the trade is closed at the correct exit.
+
+12  Im 20 usdt entre,  20 usdt on every step + max trades 100
+
+13  risk 2%   trade 20 usdt, wallet 401.2 usdt (only so i knew that dynamic leverage do right calkylation)   icolated trades  NOT cross
+
+14 leverage entre: dynamic, x10 ore swing x6.   in pyramid max x50 leverage, one way
+
+15 dynamic leverage  like message from 17 sept.
+
+16 copy singles from groups only singles nothing else :D
+17 "block for copy" if the same signal comes from different groups it should be blocked for 3 hours. ex. bitcin entre 1.0 tp 2.0 sl 0.8 Long. Accepting about 5% difference. IF singal bitsoin comes shot it should be added, bitcoin comes as LONG with other values ​​it should be added (explanation: if a trade stcikeriway so signal issuer can write about it = then it should be accepted, if it is copies with small ditteans it should be blocked)
+
+18 Are all messages 100% secured against groups and bybit.
+first "copy notified" = confirmed against group? all steps that occur on bybit and messages to telegram are made so that bybit confirms, updates etc. and then messages to telegram in all steps?
+
+19  is everything done in python 3.10?? (The smallest error in the code puhon version means bugs that are difficult to find. bybits requirements for 3.10)
+
+20 Does the leverage have 2 decimal places on dynamic leverage?
+21 Log the files, every little detail in them is logged, for troubleshooting and strategic review for "trading"
+
+22 Is IM correct on bybit when position is opened about 20 usdt on all trades? likewise about 20 usdt on each step in the pyramid etc. ensure
+
+23  is group name on message name not number now?
+
+24 is group name on message name not number now?
+24 Does it work if I click on "bitcin trade" in telegram so I can see all history, see message September 19th around 7:45 PM
+
+25 position merge , messge from chat gpt 20 sep morning about entres and roules.
+
+26 daily and weekly reports, missing
+
+27 Reliable Bot  2 diffrent message, read 20 septermber  aound 12.00 tellegram
+
+28  blocking same singals in 3 hours If same signal like. Bitcoin long Is the same almost in 3 hours block! If  Bitcoin short come its ok Ore if entre tp sl had more then 5% different from original its ok
+
+29 delite memmorys buy the roules
+
+30 📊 Resultat: +1.59% | +32.00 USD  Hear it should say % inkl leverage, This one should be   acound 3.2 USDT  not 32 usdt  if it is 20 usdt / trade.....
+31 control the headline on all message, message 2   tp1??  should be  tp2 :D
+
+32  First it should be good to see. One trade that is going good.
+From the groups..... To the end of the training Stop and closing Trade.  All steps.
+After that one Trade that goes minus. And turn around and Plus  Lets say..  stop on tp2.... and close trade....
+
+
+
+
+
+
+
+How messages to Telegram should look like.
+
+
+
+Every step must come from bybit (not step 1)
+Everything must comfirm from bybit and me 100% same like bybit
+
+
+
+1.Channel name
+oDocument says: NAME OF CHANNEL NOT NR every message
+o⚠️ Ensure you always use the channel’s actual name, not an ID number.
+2.Confirmations
+oEvery line marked “MUST confirm from Bybit” must be preserved.
+o⚠️ In some of your drafts you wrote just “måste bekräftas i Bybit” — keep exact wording “MUST confirm from Bybit” in English if required by spec.
+3.Consistent numbering
+oDocument numbering (1–13) should be followed.
+o⚠️ In your drafts some numbers were shifted (e.g. hedge/open/stäng mismatch). Make sure final numbering matches doc.
+4.Genomsnittligt entry (avg_entry)
+oDocument explicitly says: “← volymvägt mellan entry1 & entry2”
+o⚠️ Don’t write “mitt i mellan” — must be volume-weighted average.
+5.Leverage notation
+oDocument uses x6, x10 consistently.
+o⚠️ In your draft you sometimes wrote “(avslutad): {{hävstång}}x”. Keep consistent: ⚙️ Hävstång: x{{value}} or {{value}}x but same style across.
+
+
+
+
+
+1 When message go from groupes to chanel
+
+📑 Telegrammeddelanden – Standard (alla steg)
+1) Signal mottagen & kopierad – Swing
+✅ Signal mottagen & kopierad 
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+📍 Typ: Swing
+
+⚙️ Hävstång: x6
+💰 IM: {{im}} USDT
+
+
+2) Signal mottagen & kopierad – Dynamisk
+✅ Signal mottagen & kopierad 
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Entry: {{entry}}
+🎯 TP1: {{tp1}} ({{tp1_pct}}%)
+🎯 TP2: {{tp2}} ({{tp2_pct}}%)
+🎯 TP3: {{tp3}} ({{tp3_pct}}%)
+🎯 TP4: {{tp4}} ({{tp4_pct}}%)
+🚩 SL: {{sl}} ({{sl_pct}}%)
+
+⚙️ Hävstång: Dynamisk
+💰 IM: {{im}} USDT
+
+
+3) Signal mottagen & kopierad – Fast
+✅ Signal mottagen & kopierad 
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Entry: {{entry}}
+🎯 TP1: {{tp1}} ({{tp1_pct}}%)
+🎯 TP2: {{tp2}} ({{tp2_pct}}%)
+🎯 TP3: {{tp3}} ({{tp3_pct}}%)
+🎯 TP4: {{tp4}} ({{tp4_pct}}%)
+🚩 SL: {{sl}} ({{sl_pct}}%)
+
+⚙️ Hävstång: Fast x10
+💰 IM: {{im}} USDT
+
+2 When Order go to bybit, bybit send comfirm to telegram!
+
+📑 Telegrammeddelanden – Standard (alla steg)
+1)Order placerad – Swing/Dynamisk/Fast
+
+✅ Order placerad – Swing
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+📍 Typ: Swing
+
+⚙️ Hävstång: x6
+💰 IM: {{im}} USDT MUST comfirm from bybit (16,78 usdt ore 21,56 usdt example)
+☑️ Post-Only |    MUST comfirm from bybit
+ ☑️ Reduce-Only MUST comfirm from bybit
+ 🔑 Order-ID) MUST comfirm from bybit
+
+2) Order placerad Dynamisk
+
+✅ Signal Order placerad –Dynamisk
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Entry: {{entry}}
+🎯 TP1: {{tp1}} ({{tp1_pct}}%)
+🎯 TP2: {{tp2}} ({{tp2_pct}}%)
+🎯 TP3: {{tp3}} ({{tp3_pct}}%)
+🎯 TP4: {{tp4}} ({{tp4_pct}}%)
+🚩 SL: {{sl}} ({{sl_pct}}%)
+
+⚙️ Hävstång: Dynamisk
+💰 IM: {{im}} USDT  MUST comfirm from bybit (16,78 usdt ore 21,56 usdt example)
+☑️ Post-Only |    MUST comfirm from bybit
+ ☑️ Reduce-Only MUST comfirm from bybit
+ 🔑 Order-ID) MUST comfirm from bybit
+
+3  Order placerad – Fast
+
+✅ Order placerad – Fast
+
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Entry: {{entry}}
+🎯 TP1: {{tp1}} ({{tp1_pct}}%)
+🎯 TP2: {{tp2}} ({{tp2_pct}}%)
+🎯 TP3: {{tp3}} ({{tp3_pct}}%)
+🎯 TP4: {{tp4}} ({{tp4_pct}}%)
+🚩 SL: {{sl}} ({{sl_pct}}%)
+
+⚙️ Hävstång: Fast x10
+💰 IM: {{im}} USDT  MUST comfirm from bybit (16,78 usdt ore 21,56 usdt example)
+☑️ Post-Only |    MUST comfirm from bybit
+ ☑️ Reduce-Only MUST comfirm from bybit
+ 🔑 Order-ID) MUST comfirm from bybit
+
+3 Position opend
+5) Position öppnad – Swing/Dynamisk/Fast
+
+📑 Telegrammeddelanden – Standard (alla steg)
+1)Position öppnad  – Swing/Dynamisk/Fast
+
+✅ Position öppnad  – Swing
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+📍 Typ: Swing
+
+⚙️ Hävstång: x6
+💰 IM: {{im}} USDT   MUST comfirm from bybit (16,78 usdt ore 21,56 usdt example)
+☑️ Post-Only |    MUST comfirm from bybit
+ ☑️ Reduce-Only MUST comfirm from bybit
+ 🔑 Order-ID) MUST comfirm from bybit
+
+2) Position öppnad  Dynamisk
+
+✅ Signal Position öppnad  – Dynamisk
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Entry: {{entry}}
+🎯 TP1: {{tp1}} ({{tp1_pct}}%)
+🎯 TP2: {{tp2}} ({{tp2_pct}}%)
+🎯 TP3: {{tp3}} ({{tp3_pct}}%)
+🎯 TP4: {{tp4}} ({{tp4_pct}}%)
+🚩 SL: {{sl}} ({{sl_pct}}%)
+
+⚙️ Hävstång: Dynamisk
+💰 IM: {{im}} USDT  MUST comfirm from bybit (16,78 usdt ore 21,56 usdt example)
+☑️ Post-Only |    MUST comfirm from bybit
+ ☑️ Reduce-Only MUST comfirm from bybit
+ 🔑 Order-ID) MUST comfirm from bybit
+
+3) Position öppnad  – Fast
+
+✅ Position öppnad  – Fast
+🕒 Tid: {{tid}}
+📢 Från kanal: {{källa}}   NAME OF CHANEL NOT NR every message
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Entry: {{entry}}
+🎯 TP1: {{tp1}} ({{tp1_pct}}%)
+🎯 TP2: {{tp2}} ({{tp2_pct}}%)
+🎯 TP3: {{tp3}} ({{tp3_pct}}%)
+🎯 TP4: {{tp4}} ({{tp4_pct}}%)
+🚩 SL: {{sl}} ({{sl_pct}}%)
+
+⚙️ Hävstång: Fast x10
+💰 IM: {{im}} USDT  MUST comfirm from bybit (16,78 usdt ore 21,56 usdt example)
+☑️ Post-Only |    MUST comfirm from bybit
+ ☑️ Reduce-Only MUST comfirm from bybit
+ 🔑 Order-ID) MUST comfirm from bybit
+
+
+4 Entre, orderplan!
+
+6) ENTRY 1 & 2 TAGEN
+📌 ENTRY 1 TAGEN
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+💥 Entry: {{entry1}}
+💵 Kvantitet: {{kvantitet1}}
+💰 IM: {{im1}} USDT (IM totalt: {{im_total}} USDT)    MUST comfirm from bybit (16,78 usdt ore 21,56 usdt example) (like 50/50)
+
+📌 ENTRY 2 TAGEN
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+💥 Entry: {{entry2}}
+💵 Kvantitet: {{kvantitet2}}
+💰 IM: {{im2}} USDT (IM totalt: {{im_total}} USDT) MUST comfirm from bybit (16,78 usdt ore 21,56 usdt example) (like 50/50)
+
+
+5  Put 2 limmit together
+📌 Sammanställning av ENTRY 1 + ENTRY 2
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📌 ENTRY 1 
+💥 Entry: {{entry1}}
+💵 Kvantitet: {{kvantitet1}}
+💰 IM: {{im1}} USDT (IM totalt: {{im_total}} USDT)
+⚠️ Måste bekräftas i Bybit (ex. 16,78 USDT eller 21,56 USDT ≈50/50)
+
+📌 ENTRY 2
+💥 Entry: {{entry2}}
+💵 Kvantitet: {{kvantitet2}}
+💰 IM: {{im2}} USDT (IM totalt: {{im_total}} USDT)
+⚠️ Måste bekräftas i Bybit (ex. 16,78 USDT eller 21,56 USDT ≈50/50)
+
+📌 SAMMANSATT POSITION
+💥 Genomsnittligt Entry: {{avg_entry}}   ← volymvägt mellan entry1 & entry2
+💵 Total kvantitet: {{kvantitet_total}}
+💰 IM totalt: {{im_total}} USDT
+⚠️ Bekräfta i Bybit)
+
+6 take profikt 1 to?? ??
+ONLY UP To 6,1% highest
+
+🎯 TAKE PROFIT 1 TAGEN
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Sida: {{riktning}}
+
+📍 TP1: {{tp1}} ({{tp1_pct}}%)  MUST confirm from Bybit
+💵 Stängd kvantitet: {{kvantitet1}} ({{andel1}}% av positionen)
+📊 Resultat: {{resultat_pct1}}% | {{resultat_usdt1}} USDT  inkl. hävstång
+
+🎯 TAKE PROFIT 2 TAGEN
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Sida: {{riktning}}
+
+📍 TP2: {{tp2}} ({{tp2_pct}}%)  MUST confirm from Bybit
+💵 Stängd kvantitet: {{kvantitet2}} ({{andel2}}% av positionen)
+📊 Resultat: {{resultat_pct2}}% | {{resultat_usdt2}} USDT  inkl. hävstång
+
+🎯 TAKE PROFIT 3 TAGEN
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Sida: {{riktning}}
+
+📍 TP3: {{tp3}} ({{tp3_pct}}%)  MUST confirm from Bybit
+💵 Stängd kvantitet: {{kvantitet3}} ({{andel3}}% av positionen)
+📊 Resultat: {{resultat_pct3}}% | {{resultat_usdt3}} USDT  inkl. hävstång
+
+🎯 TAKE PROFIT 4 TAGEN
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Sida: {{riktning}}
+
+📍 TP4: {{tp4}} ({{tp4_pct}}%)  MUST confirm from Bybit
+💵 Stängd kvantitet: {{kvantitet4}} ({{andel4}}% av positionen)
+📊 Resultat: {{resultat_pct4}}% | {{resultat_usdt4}} USDT  inkl. hävstång
+
+
+7 pramid
+
+📈 PYRAMID {{nivå}} steg 1, 1,5% kontrollera IM
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Pris: {{pris}} (+{{trigger_pct}}%)  (måste bekräftas av Bybit)
+💵 Tillagd kvantitet: {{kvantitet}}     (måste bekräftas av Bybit)
+💰 IM påfyllnad: +{{im}} USDT (IM totalt: {{im_total}} USDT)   (måste bekräftas av Bybit)
+
+
+📈 PYRAMID {{nivå}} steg 2, 2,3% Kontroll: SL flyttas till Break Even
+2,3% Kontroll: SL flyttas till Break Even
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Pris: {{pris}} (+2,3%) 
+🛡️ SL justerad till Break Even (måste bekräftas av Bybit)
+
+📈 PYRAMID {{nivå}} steg 2, 2,4% Kontroll: Fyll upp IM till 40 USDT
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Pris: {{pris}} (+2,4%) 
+💰 IM-påfyllnad: {{im}} USDT (IM totalt: 40 USDT) (måste bekräftas av Bybit)
+
+
+📈 PYRAMID {{nivå}} steg 3, 2,5% Kontroll: Hävstång höjd
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Pris: {{pris}} (+2,5%) 
+⚙️ Hävstång höjd till {{leverage}}x (enligt regler, ev. max 50x) (måste bekräftas av Bybit)
+
+📈 PYRAMID {{nivå}} steg 4, 4,0% Kontroll: Fyll upp IM till 60 USDT
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Pris: {{pris}} (+4,0%) 
+💰 IM-påfyllnad: {{im}} USDT (IM totalt: 60 USDT) (måste bekräftas av Bybit)
+
+📈 PYRAMID {{nivå}} steg 5, 6,0% Kontroll: Fyll upp IM till 80 USDT
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Pris: {{pris}} (+6,0%) 
+💰 IM-påfyllnad: {{im}} USDT (IM totalt: 80 USDT) (måste bekräftas av Bybit)
+
+📈 PYRAMID {{nivå}} steg 6, 8,0% Kontroll: Fyll upp IM till 100 USDT
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+💥 Pris: {{pris}} (+8,0%) 
+💰 IM-påfyllnad: {{im}} USDT (IM totalt: 100 USDT) (måste bekräftas av Bybit)
+
+
+
+
+
+8 Tralingstop
+
+🔄 TRAILING STOP AKTIVERAD
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Riktning: {{riktning}}
+
+📍 Trigger: +{{trigger_pct}}%
+📍 Avstånd: {{avstånd_pct}}% bakom pris
+📍 Ny SL: {{ny_sl}}
+
+9 Break evan
+
+⚖️ BREAK-EVEN JUSTERAD
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 SL flyttad till: {{sl_flyttad}}
+
+10 Hedge
+
+🛡️ HEDGE / VÄNDNING AKTIVERAD
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📈 Tidigare position: {{old_side}} (stängd)
+📉 Ny motriktad position: {{new_side}}
+💥 Entry: {{entry}}
+
+⚙️ Hävstång: {{hävstång}}x
+💰 IM: {{im}} USDT (MUST confirm from Bybit)
+
+
+
+
+
+🛡️ HEDGE / VÄNDNING AVSLUTAD
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📈 Stängd position: {{old_side}}
+💥 Stängningspris: {{exit}}
+
+⚙️ Hävstång (avslutad): {{hävstång}}x
+
+
+
+11 Re entre  
+
+12) RE-ENTRY / ÅTERINTRÄDE UTFÖRD
+♻️ RE-ENTRY / ÅTERINTRÄDE AKTIVERAD
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Sida: {{riktning}}
+
+💥 Entry: {{entry}}
+⚙️ Hävstång: {{hävstång}}x
+💰 IM: {{im}} USDT (IM totalt: {{im_total}} USDT)
+
+13) RE-ENTRY / ÅTERINTRÄDE STÄNGD
+♻️ RE-ENTRY / ÅTERINTRÄDE AVSLUTAD
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Sida: {{riktning}}
+
+💥 Exit: {{exit}}
+📉 Resultat: {{pnl}} USDT ({{pnl_pct}}%)
+⚙️ Hävstång (avslutad): {{hävstång}}x
+
+
+12 Stop ”loss basic”
+🚩 STOP LOSS TRÄFFAD
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Sida: {{riktning}}
+
+📍 SL: {{sl}}
+💵 Stängd kvantitet: {{kvantitet}} (100%)
+📊 Resultat: {{resultat_pct}} | {{resultat_usdt}} USDT
+
+🔁 Återinträdeslogik: aktiverad – ny signal tas vid bekräftad trendvändning
+
+
+13 Position cloed
+
+
+✅ POSITION STÄNGD
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+📈 Sida: {{riktning}}
+
+💵 Stängd kvantitet: {{kvantitet}} (100%)
+📍 Exit: {{pris}}
+
+📊 Resultat: {{resultat_pct}}% inkl. hävstång 
+📊 Resultat: {{resultat_usdt}} USDT inkl. hävstång
+📊 PoL: {{pol_usdt}} USDT
+
+
+
+
+
+
+❌ SIGNAL OGILTIG ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Ofullständig eller felaktig signal mottagen
+css
+Kopiera kod
+❌ ORDER MISSLYCKADES ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Order kunde inte placeras (kontrollera saldo eller parametrar)
+css
+Kopiera kod
+❌ ORDER AVVISAD ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Ordern avvisades av Bybit (felaktiga parametrar eller otillåten hävstång)
+css
+Kopiera kod
+❌ POSITION EJ ÖPPNAD ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Positionen kunde inte öppnas (otillräcklig IM eller fel hävstång)
+css
+Kopiera kod
+❌ POSITION EJ STÄNGD ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Positionen kunde inte stängas (API-problem eller Reduce-Only aktiv)
+yaml
+Kopiera kod
+❌ OTILLRÄCKLIG IM ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Ej tillräckligt med margin för att öppna positionen
+yaml
+Kopiera kod
+❌ OTILLRÄCKLIG BALANS ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Kontosaldo räcker inte för denna order
+css
+Kopiera kod
+❌ SLUT PÅ PENGAR ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Inga medel kvar på kontot för att öppna eller fylla på position
+yaml
+Kopiera kod
+❌ TP EJ UTFÖRD ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Take Profit kunde inte aktiveras (order ej placerad eller missad trigger)
+yaml
+Kopiera kod
+❌ SL EJ UTFÖRD ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Stop Loss kunde inte placeras (kontrollera orderstatus)
+yaml
+Kopiera kod
+❌ API FEL ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Ingen kontakt med Bybit (kontrollera API-nyckel eller nätverk)
+yaml
+Kopiera kod
+❌ SYSTEM FEL ❌
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📍 Fel: Okänt fel i boten (kräver manuell kontroll)
+
+
+RAPPORTS
+
+✔️ ORDER RADERAD ✔️
+📢 Från kanal: {{källa}}
+📊 Symbol: {{symbol}}
+
+📑 DAGLIG RAPPORT FRÅN GRUPP: {{gruppnamn}}
+
+📊 RESULTAT
+Symbol        %            USDT
+{{symbol1}}   {{pct1}}     {{usdt1}}
+{{symbol2}}   {{pct2}}     {{usdt2}}
+{{symbol3}}   {{pct3}}     {{usdt3}}
+
+------------------------------------
+
+📈 Antal signaler: {{antal_signaler}}
+💹 Totalt resultat: {{resultat_usdt}} USDT
+📊 Vinst/Förlust: {{resultat_pct}}%📍 Fel: Order ej öppnad inom tillåten tid (raderad enligt reglerna)
+
+
+
+📑 VECKORAPPORT FRÅN GRUPP: {{gruppnamn}}
+
+📊 RESULTAT
+Symbol        %            USDT
+{{symbol1}}   {{pct1}}     {{usdt1}}
+{{symbol2}}   {{pct2}}     {{usdt2}}
+{{symbol3}}   {{pct3}}     {{usdt3}}
+...           ...          ...
+
+------------------------------------
+
+📈 Antal signaler: {{antal_signaler}}
+💹 Totalt resultat: {{resultat_usdt}} USDT
+📊 Vinst/Förlust: {{resultat_pct}}%
+
+
+📑 VECKORAPPORT – FELMEDDELANDEN: {{gruppnamn}}
+
+📊 FELMEDDELANDEN
+Typ                           Antal
+Order misslyckades            {{antal_order_fail}}
+Order avvisad                 {{antal_order_reject}}
+Position ej öppnad            {{antal_pos_fail}}
+Position ej stängd            {{antal_pos_close_fail}}
+Otillräcklig IM               {{antal_im_fail}}
+Otillräcklig balans           {{antal_balance_fail}}
+API-fel                       {{antal_api_fail}}
+Systemfel                     {{antal_system_fail}}
+Signal ogiltig                {{antal_signal_fail}}
+SL/TP ej utförd               {{antal_sl_tp_fail}}
+Slut på pengar                {{antal_no_money}}
+Order raderad (V)             {{antal_v_order_del}}
+
+------------------------------------
+
+📈 Totalt antal fel: {{antal_fel}}
+📊 Felfrekvens: {{fel_pct}}% av totala signaler
+
+
+
+📑 DAGSRAPPORT – FELMEDDELANDEN: {{gruppnamn}}
+
+📊 FELMEDDELANDEN
+Typ                           Antal
+Order misslyckades            {{antal_order_fail}}
+Order avvisad                 {{antal_order_reject}}
+Position ej öppnad            {{antal_pos_fail}}
+Position ej stängd            {{antal_pos_close_fail}}
+Otillräcklig IM               {{antal_im_fail}}
+Otillräcklig balans           {{antal_balance_fail}}
+API-fel                       {{antal_api_fail}}
+Systemfel                     {{antal_system_fail}}
+Signal ogiltig                {{antal_signal_fail}}
+SL/TP ej utförd               {{antal_sl_tp_fail}}
+Slut på pengar                {{antal_no_money}}
+Order raderad (V)             {{antal_v_order_del}}
+
+------------------------------------
+
+📈 Totalt antal fel: {{antal_fel}}
+📊 Felfrekvens: {{fel_pct}}% av dagens signaler

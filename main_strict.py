@@ -139,21 +139,29 @@ async def main():
         pass
     
     try:
+        # CRITICAL: Set environment variables BEFORE any imports
+        import os
+        os.environ["BYBIT_ENDPOINT"] = "https://api-demo.bybit.com"
+        os.environ["BYBIT_API_KEY"] = "Oh5e4BWjjTLIr5Lq2l"
+        os.environ["BYBIT_API_SECRET"] = "AxiPhPnxkhMxFKpA1XuIs1jukOoAp5GfzkrK"
+        print(f"🔧 Environment configured: {os.environ['BYBIT_ENDPOINT']}")
+        
         # Initialize strict components
         await _initialize_strict_components()
         
         # Validate strict requirements
         await _validate_strict_requirements()
         
-        # Initialize Bybit client
-        client = BybitClient()
+        # Initialize Bybit client (singleton)
+        from app.bybit.client import get_bybit_client
+        client = get_bybit_client()
         
         # Validate API keys first (fail-fast)
         await _validate_api(client)
         
         # Start strict report scheduler (exact client timing)
         await start_strict_report_scheduler()
-        print("[OK] Strict report scheduler started (Daily 08:00, Weekly Sat 22:00)")
+        print("[OK] Strict report scheduledo tarted (Daily 08:00, Weekly Sat 22:00)")
         
         # Start 6-day cleanup scheduler for unfilled orders
         asyncio.create_task(cleanup_scheduler())

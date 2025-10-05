@@ -304,9 +304,6 @@ class StrictTelegramClient:
     async def _send_signal_blocked(self, signal_data: dict, block_reason: str):
         """Send signal blocked message."""
         try:
-            from app.telegram.client_templates import ClientTemplates
-            
-            templates = ClientTemplates()
             message = f"""🚫 SIGNAL BLOCKERAD
 📢 Från kanal: {signal_data.get('channel_name', '')}
 📊 Symbol: {signal_data.get('symbol', '')}

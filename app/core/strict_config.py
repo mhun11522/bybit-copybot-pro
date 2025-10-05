@@ -45,7 +45,7 @@ class StrictSettings:
     weekly_report_day: int = 5          # Saturday (0=Monday, 5=Saturday)
     
     # Bybit configuration
-    bybit_endpoint: str = "https://api.bybit.com"
+    bybit_endpoint: str = "https://api-demo.bybit.com"
     bybit_recv_window: str = "30000"
     bybit_api_key: str = ""
     
@@ -74,16 +74,25 @@ class StrictSettings:
         "-1002308774475": "Scalping 100 Signals",
         "-1002655381894": "Crypto Scalping Signals",
         "-1001858531978": "Hemi Signals",
-        "-1003027029201": "MY_TEST_CHANNEL"
+        "-1003027029201": "MY_TEST_CHANNEL",
+        "-1002582453224": "Active Trading Channel",
+        "-1002317185064": "Trading Signals Channel",
+        "-1001674963962": "Crypto Signals Hub",
+        "-1002606212243": "Premium Trading Signals",
+        "-1002339729195": "VIP Trading Channel",
+        "-1001594157621": "Elite Trading Signals",
+        "-1002633265221": "Pro Trading Channel",
+        "-1001173711569": "Advanced Trading Signals"
     }
     
     # Whitelisted channel IDs (derived from mapping)
     source_whitelist: List[str] = list(channel_id_name_map.keys())
     
-    # Order type enforcement
-    entry_order_type: str = "Limit"
-    entry_time_in_force: str = "PostOnly"
-    exit_order_type: str = "Market"  # For TP/SL triggers
+    # Order type enforcement - DEMO ENVIRONMENT OPTIMIZATION
+    # Use Market orders for demo environment to ensure fills
+    entry_order_type: str = "Market"  # Market orders for immediate fills in demo
+    entry_time_in_force: str = "IOC"  # Immediate or Cancel for demo environment
+    exit_order_type: str = "Stop"  # Stop orders for TP/SL triggers
     exit_reduce_only: bool = True
     exit_trigger_by: str = "MarkPrice"
     

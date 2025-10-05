@@ -302,6 +302,7 @@ async def get_position_manager() -> PositionManager:
     """Get or create position manager instance."""
     global _manager_instance
     if _manager_instance is None:
-        bybit_client = BybitClient()
+        from app.bybit.client import get_bybit_client
+        bybit_client = get_bybit_client()
         _manager_instance = PositionManager(bybit_client)
     return _manager_instance

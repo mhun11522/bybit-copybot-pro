@@ -13,14 +13,32 @@ class SymbolInfo:
     
     def __init__(self, symbol: str, data: Dict[str, Any]):
         self.symbol = symbol
-        self.tick_size = to_decimal(data.get('tickSize', '0.01'))
-        self.step_size = to_decimal(data.get('stepSize', '0.001'))
-        self.min_qty = to_decimal(data.get('minOrderQty', '0.001'))
-        self.max_qty = to_decimal(data.get('maxOrderQty', '1000000'))
-        self.min_notional = to_decimal(data.get('minNotional', '5'))
-        self.max_leverage = to_decimal(data.get('maxLeverage', '50'))
+        
+        # Extract lot size filter (quantity constraints)
+        lot_size_filter = data.get('lotSizeFilter', {})
+        self.min_qty = to_decimal(lot_size_filter.get('minOrderQty', '0.001'))
+        self.max_qty = to_decimal(lot_size_filter.get('maxOrderQty', '1000000'))
+        self.step_size = to_decimal(lot_size_filter.get('qtyStep', '0.001'))
+        self.min_notional = to_decimal(lot_size_filter.get('minNotionalValue', '5'))
+        
+        # Extract price filter (price constraints)
+        price_filter = data.get('priceFilter', {})
+        self.tick_size = to_decimal(price_filter.get('tickSize', '0.01'))
+        
+        # Extract leverage filter
+        leverage_filter = data.get('leverageFilter', {})
+        self.max_leverage = to_decimal(leverage_filter.get('maxLeverage', '50'))
+        
+        # Symbol status
         self.status = data.get('status', 'Trading')
         self.is_trading = self.status == 'Trading'
+        
+        # Calculate quantity precision from step size
+        step_str = str(self.step_size)
+        if '.' in step_str:
+            self.qty_precision = len(step_str.split('.')[1])
+        else:
+            self.qty_precision = 0
     
     def quantize_price(self, price: Decimal) -> Decimal:
         """Quantize price to tick size."""
@@ -29,6 +47,13 @@ class SymbolInfo:
     def quantize_qty(self, qty: Decimal) -> Decimal:
         """Quantize quantity to step size."""
         return quantize_qty(qty, self.step_size)
+    
+    def format_qty(self, qty: Decimal) -> str:
+        """Format quantity as string with correct precision for Bybit API."""
+        # First quantize to step size
+        quantized_qty = self.quantize_qty(qty)
+        # Then format with correct decimal places
+        return format(quantized_qty, f".{self.qty_precision}f")
     
     def validate_qty(self, qty: Decimal) -> bool:
         """Validate quantity is within limits."""
@@ -52,9 +77,12 @@ class SymbolRegistry:
         self._bybit_client = None
     
     async def _get_bybit_client(self) -> BybitClient:
-        """Get or create Bybit client."""
+        """Get singleton Bybit client."""
         if self._bybit_client is None:
-            self._bybit_client = BybitClient()
+            # Use the global singleton instance
+            from app.bybit.client import get_bybit_client
+            self._bybit_client = get_bybit_client()
+            system_logger.info(f"Symbol registry using singleton client with endpoint: {self._bybit_client.http.base_url}")
         return self._bybit_client
     
     async def _fetch_symbols(self) -> Dict[str, SymbolInfo]:

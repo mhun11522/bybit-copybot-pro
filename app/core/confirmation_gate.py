@@ -18,7 +18,7 @@ class ConfirmationGate:
         operation_id: str, 
         bybit_operation: Callable[[], Awaitable[Dict[str, Any]]],
         telegram_callback: Callable[[Dict[str, Any]], Awaitable[None]],
-        timeout: float = 30.0
+        timeout: float = 15.0  # Reduced timeout for Market orders
     ) -> bool:
         """
         Execute Bybit operation and wait for confirmation before sending Telegram.
@@ -94,7 +94,8 @@ class ConfirmationGate:
         operation_id = f"entry_{symbol}_{direction}_{int(asyncio.get_event_loop().time())}"
         
         async def bybit_operation():
-            client = BybitClient()
+            from app.bybit.client import get_bybit_client
+            client = get_bybit_client()
             try:
                 # Set leverage
                 await client.set_leverage(
@@ -134,29 +135,17 @@ class ConfirmationGate:
                 
                 # Get symbol metadata for minimum quantity validation
                 from app.core.symbol_registry import get_symbol_registry
+                from app.core.position_calculator import PositionCalculator
                 registry = await get_symbol_registry()
                 symbol_info = await registry.get_symbol_info(symbol)
                 
                 if symbol_info:
-                    # Quantize quantity to step size
-                    quantized_qty = symbol_info.quantize_qty(qty)
-                    # Ensure total quantity meets minimum requirements
-                    total_qty = max(quantized_qty, symbol_info.min_qty)
-                    
-                    # For dual entries, ensure each entry meets minimum quantity
-                    if len(processed_entries) > 1:
-                        # Calculate minimum total quantity needed for dual entries
-                        min_total_for_dual = symbol_info.min_qty * len(processed_entries)
-                        total_qty = max(total_qty, min_total_for_dual)
-                    
-                    # Split quantity for dual entries
-                    order_qty = total_qty / len(processed_entries)
-                    # Quantize the split quantity to step size
-                    order_qty = symbol_info.quantize_qty(order_qty)
-                    # Ensure each entry meets minimum quantity
-                    order_qty = max(order_qty, symbol_info.min_qty)
-                    # Final quantization after ensuring minimum
-                    order_qty = symbol_info.quantize_qty(order_qty)
+                    # Use the new position calculator for dual entry calculation
+                    order_qty = PositionCalculator.calculate_dual_entry_qty(
+                        total_contracts=qty,
+                        symbol_info=symbol_info,
+                        entries_count=len(processed_entries)
+                    )
                     
                     # Final validation
                     if not symbol_info.validate_qty(order_qty):
@@ -166,8 +155,6 @@ class ConfirmationGate:
                     # Log the quantity calculation details
                     system_logger.info(f"Order quantity calculation for {symbol}", {
                         'original_qty': float(qty),
-                        'quantized_qty': float(quantized_qty),
-                        'total_qty': float(total_qty),
                         'entries_count': len(processed_entries),
                         'order_qty': float(order_qty),
                         'min_qty': float(symbol_info.min_qty),
@@ -181,8 +168,8 @@ class ConfirmationGate:
                     # Convert direction to Bybit format
                     bybit_side = "Buy" if direction == "LONG" else "Sell"
                     
-                    # Retry PostOnly orders until accepted
-                    result = await self._place_postonly_order_with_retry(
+                    # Place order based on configuration (Market or Limit)
+                    result = await self._place_order_with_retry(
                         client, symbol, bybit_side, order_qty, entry_price, f"{operation_id}_{i}"
                     )
                     order_results.append(result)
@@ -245,7 +232,8 @@ class ConfirmationGate:
         operation_id = f"exit_{symbol}_{side}_{int(asyncio.get_event_loop().time())}"
         
         async def bybit_operation():
-            client = BybitClient()
+            from app.bybit.client import get_bybit_client
+            client = get_bybit_client()
             try:
                 order_results = []
                 
@@ -312,7 +300,7 @@ class ConfirmationGate:
                         "side": exit_side,
                         "orderType": STRICT_CONFIG.exit_order_type,
                         "qty": str(qty),
-                        "price": str(tp_price),
+                        "triggerPrice": str(tp_price),  # Use triggerPrice for Stop orders
                         "timeInForce": "GTC",
                         "reduceOnly": STRICT_CONFIG.exit_reduce_only,
                         "positionIdx": 0,
@@ -320,8 +308,14 @@ class ConfirmationGate:
                         "orderLinkId": f"{operation_id}_tp_{i}"
                     }
                     
-                    result = await client.place_order(order_body)
-                    order_results.append(result)
+                    try:
+                        result = await client.place_order(order_body)
+                        order_results.append(result)
+                        system_logger.info(f"TP order placed successfully: {result}")
+                    except Exception as e:
+                        system_logger.error(f"Failed to place TP order: {e}")
+                        # Continue with other orders even if one fails
+                        pass
                 
                 # Place SL order
                 if processed_sl:
@@ -335,7 +329,7 @@ class ConfirmationGate:
                         "side": exit_side,
                         "orderType": STRICT_CONFIG.exit_order_type,
                         "qty": str(qty),
-                        "price": str(processed_sl),
+                        "triggerPrice": str(processed_sl),  # Use triggerPrice for Stop orders
                         "timeInForce": "GTC",
                         "reduceOnly": STRICT_CONFIG.exit_reduce_only,
                         "positionIdx": 0,
@@ -343,8 +337,14 @@ class ConfirmationGate:
                         "orderLinkId": f"{operation_id}_sl"
                     }
                     
-                    result = await client.place_order(sl_order_body)
-                    order_results.append(result)
+                    try:
+                        result = await client.place_order(sl_order_body)
+                        order_results.append(result)
+                        system_logger.info(f"SL order placed successfully: {result}")
+                    except Exception as e:
+                        system_logger.error(f"Failed to place SL order: {e}")
+                        # Continue even if SL fails
+                        pass
                 
                 return {
                     'retCode': 0,
@@ -395,7 +395,8 @@ class ConfirmationGate:
         operation_id = f"close_{symbol}_{side}_{int(asyncio.get_event_loop().time())}"
         
         async def bybit_operation():
-            client = BybitClient()
+            from app.bybit.client import get_bybit_client
+            client = get_bybit_client()
             try:
                 close_side = "Sell" if side == "Buy" else "Buy"
                 order_body = {
@@ -441,6 +442,139 @@ class ConfirmationGate:
             operation_id, bybit_operation, telegram_callback
         )
     
+    async def _place_order_with_retry(self, client, symbol: str, side: str, qty: Decimal, price: Decimal, order_link_id: str, max_retries: int = 10) -> Dict[str, Any]:
+        """Place order (Market or Limit) with retry logic."""
+        from decimal import Decimal, ROUND_DOWN, ROUND_UP
+        from app.core.symbol_registry import get_symbol_registry
+        
+        for attempt in range(max_retries):
+            try:
+                # Get symbol info for quantity formatting
+                registry = await get_symbol_registry()
+                symbol_info = await registry.get_symbol_info(symbol)
+                
+                # Format quantity using symbol info
+                if symbol_info:
+                    formatted_qty = symbol_info.format_qty(qty)
+                else:
+                    formatted_qty = str(qty)
+                
+                # Build order body based on order type
+                if STRICT_CONFIG.entry_order_type == "Market":
+                    # Market orders don't need price
+                    order_body = {
+                        "category": STRICT_CONFIG.supported_categories[0],
+                        "symbol": symbol,
+                        "side": side,
+                        "orderType": STRICT_CONFIG.entry_order_type,
+                        "qty": formatted_qty,
+                        "timeInForce": STRICT_CONFIG.entry_time_in_force,
+                        "reduceOnly": False,
+                        "positionIdx": 0,
+                        "orderLinkId": order_link_id
+                    }
+                else:
+                    # Limit orders need price - adjust for PostOnly acceptance
+                    from app.core.demo_config import DemoConfig
+                    if DemoConfig.is_demo_environment():
+                        # Demo environment: Adjust price more aggressively
+                        if side == "Buy":
+                            adjusted_price = price * Decimal("0.99")  # Move below market
+                        else:
+                            adjusted_price = price * Decimal("1.01")  # Move above market
+                    else:
+                        # Live environment: Use original price
+                        adjusted_price = price
+                    
+                    order_body = {
+                        "category": STRICT_CONFIG.supported_categories[0],
+                        "symbol": symbol,
+                        "side": side,
+                        "orderType": STRICT_CONFIG.entry_order_type,
+                        "qty": formatted_qty,
+                        "price": str(adjusted_price),
+                        "timeInForce": STRICT_CONFIG.entry_time_in_force,
+                        "reduceOnly": False,
+                        "positionIdx": 0,
+                        "orderLinkId": order_link_id
+                    }
+                
+                # Log the exact order body being sent to Bybit
+                system_logger.info(f"Sending order to Bybit: {order_body}")
+                
+                # Apply demo environment rate limiting
+                from app.core.demo_config import DemoConfig
+                if DemoConfig.is_demo_environment():
+                    import asyncio
+                    limits = DemoConfig.get_demo_limits()
+                    await asyncio.sleep(limits['min_request_interval'])
+                
+                result = await client.place_order(order_body)
+                
+                # Log the response from Bybit
+                system_logger.info(f"Bybit response: {result}")
+                
+                # Check if order was accepted
+                if result.get('retCode') == 0:
+                    if STRICT_CONFIG.entry_order_type == "Market":
+                        system_logger.info(f"Market order accepted: {symbol} {side} {qty}")
+                    else:
+                        system_logger.info(f"Limit order accepted: {symbol} {side} {qty} @ {adjusted_price}")
+                    return result
+                elif "PostOnly" in str(result.get('retMsg', '')) and STRICT_CONFIG.entry_order_type == "Limit":
+                    # PostOnly rejected, adjust price and retry (only for Limit orders)
+                    system_logger.warning(f"PostOnly rejected (attempt {attempt + 1}/{max_retries}): {result.get('retMsg')}")
+                    if attempt < max_retries - 1:
+                        # Demo environment: Adjust price more aggressively
+                        if side == "Buy":
+                            price = price * Decimal("0.99")  # Move further below for demo
+                        else:
+                            price = price * Decimal("1.01")  # Move further above for demo
+                        continue
+                elif "Qty invalid" in str(result.get('retMsg', '')):
+                    # Handle qty invalid error with demo-specific logic
+                    from app.core.demo_config import DemoConfig
+                    if DemoConfig.is_demo_environment():
+                        error_config = DemoConfig.get_demo_error_handling()
+                        if error_config['retry_on_qty_invalid'] and attempt < max_retries - 1:
+                            # Reduce quantity by 50% and retry
+                            qty = qty * Decimal("0.5")
+                            system_logger.warning(f"Qty invalid, reducing to {qty} and retrying (attempt {attempt + 1}/{max_retries})")
+                            continue
+                        else:
+                            # Demo environment: return immediately for qty errors
+                            system_logger.error(f"Demo environment: Qty invalid error: {result.get('retMsg')}", {
+                                'symbol': symbol,
+                                'side': side,
+                                'qty': str(qty),
+                                'price': str(price),
+                                'full_result': result
+                            })
+                            return result
+                    else:
+                        # Live environment: return immediately for qty errors
+                        system_logger.error(f"Live environment: Qty invalid error: {result.get('retMsg')}", {
+                            'symbol': symbol,
+                            'side': side,
+                            'qty': str(qty),
+                            'price': str(price),
+                            'full_result': result
+                        })
+                        return result
+                else:
+                    # Other error, return immediately
+                    system_logger.error(f"Order placement failed: {result}")
+                    return result
+                    
+            except Exception as e:
+                system_logger.error(f"Order placement attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    return {'retCode': -1, 'retMsg': f'Order placement failed after {max_retries} attempts: {str(e)}'}
+                continue
+        
+        # If we get here, all retries failed
+        return {'retCode': -1, 'retMsg': f'Order rejected after {max_retries} attempts'}
+
     async def _place_postonly_order_with_retry(self, client, symbol: str, side: str, qty: Decimal, price: Decimal, order_link_id: str, max_retries: int = 10) -> Dict[str, Any]:
         """Place PostOnly order with retry logic until accepted."""
         from decimal import Decimal, ROUND_DOWN, ROUND_UP
@@ -453,50 +587,128 @@ class ConfirmationGate:
                 symbol_info = await registry.get_symbol_info(symbol)
                 
                 # Adjust price to ensure PostOnly acceptance
-                if side == "Buy":
-                    # For buy orders, place slightly below current price
-                    adjusted_price = price * Decimal("0.999")  # 0.1% below
+                # Apply demo environment specific price adjustment
+                from app.core.demo_config import DemoConfig
+                if DemoConfig.is_demo_environment():
+                    limits = DemoConfig.get_demo_limits()
+                    if side == "Buy":
+                        adjusted_price = price * limits['buy_price_factor']
+                    else:
+                        adjusted_price = price * limits['sell_price_factor']
                 else:
-                    # For sell orders, place slightly above current price
-                    adjusted_price = price * Decimal("1.001")  # 0.1% above
+                    # Live environment price adjustment
+                    if side == "Buy":
+                        adjusted_price = price * Decimal("0.999")  # 0.1% below
+                    else:
+                        adjusted_price = price * Decimal("1.001")  # 0.1% above
                 
                 # Quantize to tick size
                 if symbol_info:
                     adjusted_price = symbol_info.quantize_price(adjusted_price)
                 
-                order_body = {
-                    "category": STRICT_CONFIG.supported_categories[0],
-                    "symbol": symbol,
-                    "side": side,
-                    "orderType": STRICT_CONFIG.entry_order_type,
-                    "qty": str(qty),
-                    "price": str(adjusted_price),
-                    "timeInForce": STRICT_CONFIG.entry_time_in_force,
-                    "reduceOnly": False,
-                    "positionIdx": 0,
-                    "orderLinkId": order_link_id
-                }
+                # Format quantity with correct precision
+                if symbol_info:
+                    formatted_qty = symbol_info.format_qty(qty)
+                else:
+                    formatted_qty = str(qty)
+                
+                # Build order body based on order type
+                if STRICT_CONFIG.entry_order_type == "Market":
+                    # Market orders don't need price
+                    order_body = {
+                        "category": STRICT_CONFIG.supported_categories[0],
+                        "symbol": symbol,
+                        "side": side,
+                        "orderType": STRICT_CONFIG.entry_order_type,
+                        "qty": formatted_qty,
+                        "timeInForce": STRICT_CONFIG.entry_time_in_force,
+                        "reduceOnly": False,
+                        "positionIdx": 0,
+                        "orderLinkId": order_link_id
+                    }
+                else:
+                    # Limit orders need price
+                    order_body = {
+                        "category": STRICT_CONFIG.supported_categories[0],
+                        "symbol": symbol,
+                        "side": side,
+                        "orderType": STRICT_CONFIG.entry_order_type,
+                        "qty": formatted_qty,
+                        "price": str(adjusted_price),
+                        "timeInForce": STRICT_CONFIG.entry_time_in_force,
+                        "reduceOnly": False,
+                        "positionIdx": 0,
+                        "orderLinkId": order_link_id
+                    }
+                
+                # Log the exact order body being sent to Bybit
+                system_logger.info(f"Sending order to Bybit: {order_body}")
+                
+                # Apply demo environment rate limiting
+                from app.core.demo_config import DemoConfig
+                if DemoConfig.is_demo_environment():
+                    import asyncio
+                    limits = DemoConfig.get_demo_limits()
+                    await asyncio.sleep(limits['min_request_interval'])
                 
                 result = await client.place_order(order_body)
                 
+                # Log the response from Bybit
+                system_logger.info(f"Bybit response: {result}")
+                
                 # Check if order was accepted
                 if result.get('retCode') == 0:
-                    system_logger.info(f"PostOnly order accepted: {symbol} {side} {qty} @ {adjusted_price}")
+                    if STRICT_CONFIG.entry_order_type == "Market":
+                        system_logger.info(f"Market order accepted: {symbol} {side} {qty}")
+                    else:
+                        system_logger.info(f"Limit order accepted: {symbol} {side} {qty} @ {adjusted_price}")
                     return result
-                elif "PostOnly" in str(result.get('retMsg', '')):
-                    # PostOnly rejected, adjust price and retry
+                elif "PostOnly" in str(result.get('retMsg', '')) and STRICT_CONFIG.entry_order_type == "Limit":
+                    # PostOnly rejected, adjust price and retry (only for Limit orders)
                     system_logger.warning(f"PostOnly rejected (attempt {attempt + 1}/{max_retries}): {result.get('retMsg')}")
                     if attempt < max_retries - 1:
-                        # Adjust price more aggressively
+                        # Demo environment: Adjust price more aggressively
                         if side == "Buy":
-                            price = price * Decimal("0.998")  # Move further below
+                            price = price * Decimal("0.99")  # Move further below for demo
                         else:
-                            price = price * Decimal("1.002")  # Move further above
+                            price = price * Decimal("1.01")  # Move further above for demo
                         continue
                 elif "Qty invalid" in str(result.get('retMsg', '')):
-                    # Qty invalid - this is a quantity issue, not price
-                    system_logger.error(f"Qty invalid error: {result.get('retMsg')}")
-                    return result  # Return immediately for quantity errors
+                    # Handle qty invalid error with demo-specific logic
+                    from app.core.demo_config import DemoConfig
+                    if DemoConfig.is_demo_environment():
+                        error_config = DemoConfig.get_demo_error_handling()
+                        if error_config['qty_invalid_retry'] and attempt < max_retries - 1:
+                            system_logger.warning(f"Demo environment: Qty invalid error (attempt {attempt + 1}/{max_retries}): {result.get('retMsg')}")
+                            # Reduce quantity using demo configuration
+                            qty = qty * error_config['qty_reduction_factor']
+                            # Re-format quantity with correct precision
+                            if symbol_info:
+                                formatted_qty = symbol_info.format_qty(qty)
+                            else:
+                                formatted_qty = str(qty)
+                            system_logger.info(f"Demo environment: Reducing quantity to {formatted_qty} for retry")
+                            continue
+                        else:
+                            # Final attempt failed, return error
+                            system_logger.error(f"Demo environment: Final qty invalid error: {result.get('retMsg')}", {
+                                'symbol': symbol,
+                                'side': side,
+                                'qty': str(qty),
+                                'price': str(adjusted_price),
+                                'full_result': result
+                            })
+                            return result
+                    else:
+                        # Live environment: return immediately for qty errors
+                        system_logger.error(f"Live environment: Qty invalid error: {result.get('retMsg')}", {
+                            'symbol': symbol,
+                            'side': side,
+                            'qty': str(qty),
+                            'price': str(adjusted_price),
+                            'full_result': result
+                        })
+                        return result
                 else:
                     # Other error, return immediately
                     system_logger.error(f"Order placement failed: {result}")

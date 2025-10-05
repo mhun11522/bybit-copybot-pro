@@ -1,7 +1,20 @@
-import os, time, hmac, hashlib, json, httpx
+import os, time, hmac, hashlib, json, httpx, asyncio
 from typing import Any, Dict
 from email.utils import parsedate_to_datetime
-from app.config.settings import BYBIT_ENDPOINT, BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_RECV_WINDOW
+from app.core.logging import system_logger
+
+# Read environment variables dynamically to avoid import-time issues
+def _get_bybit_endpoint():
+    return os.getenv("BYBIT_ENDPOINT", "https://api-demo.bybit.com")
+
+def _get_bybit_api_key():
+    return os.getenv("BYBIT_API_KEY", "")
+
+def _get_bybit_api_secret():
+    return os.getenv("BYBIT_API_SECRET", "")
+
+def _get_bybit_recv_window():
+    return os.getenv("BYBIT_RECV_WINDOW", "30000")
 
 class BybitAPIError(Exception):
     """Raised when Bybit API returns retCode != 0"""
@@ -31,16 +44,16 @@ def _ts() -> str:
     return str(int(time.time() * 1000))
 
 def _sign(payload: str) -> str:
-    return hmac.new(BYBIT_API_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(_get_bybit_api_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 def _headers(body: Dict[str, Any]):
     ts = _ts()
     body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
-    prehash = ts + BYBIT_API_KEY + BYBIT_RECV_WINDOW + body_str
+    prehash = ts + _get_bybit_api_key() + _get_bybit_recv_window() + body_str
     return {
-        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-API-KEY": _get_bybit_api_key(),
         "X-BAPI-TIMESTAMP": ts,
-        "X-BAPI-RECV-WINDOW": BYBIT_RECV_WINDOW,
+        "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
         "X-BAPI-SIGN": _sign(prehash),
         "Content-Type": "application/json",
     }
@@ -48,19 +61,32 @@ def _headers(body: Dict[str, Any]):
 def _headers_get(params: str = ""):
     """Headers for GET requests with query parameters"""
     ts = _ts()
-    prehash = ts + BYBIT_API_KEY + BYBIT_RECV_WINDOW + params
+    prehash = ts + _get_bybit_api_key() + _get_bybit_recv_window() + params
     return {
-        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-API-KEY": _get_bybit_api_key(),
         "X-BAPI-TIMESTAMP": ts,
-        "X-BAPI-RECV-WINDOW": BYBIT_RECV_WINDOW,
+        "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
         "X-BAPI-SIGN": _sign(prehash),
     }
 
 class BybitClient:
     """
     Async V5 client with server-time sync and 10002 retry.
+    Singleton pattern to ensure single instance across all modules.
     """
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(BybitClient, cls).__new__(cls)
+        return cls._instance
+    
     def __init__(self):
+        # Only initialize once
+        if self._initialized:
+            return
+            
         # Explicitly clear proxy environment variables to prevent httpx from using them
         os.environ.pop('HTTP_PROXY', None)
         os.environ.pop('HTTPS_PROXY', None)
@@ -68,7 +94,7 @@ class BybitClient:
         os.environ.pop('https_proxy', None)
         
         self.http = httpx.AsyncClient(
-            base_url=BYBIT_ENDPOINT, 
+            base_url=_get_bybit_endpoint(), 
             timeout=20.0,
             trust_env=False,  # Don't read proxy from environment
             follow_redirects=True  # Follow 301/302 redirects
@@ -77,6 +103,22 @@ class BybitClient:
         self._last_sync = 0.0
         # Allow env override; default 60s
         self._sync_interval = int(os.getenv("BYBIT_TIME_SYNC_INTERVAL", "60"))
+        
+        # Mark as initialized
+        self._initialized = True
+        print(f"🔧 BybitClient singleton created with endpoint: {self.http.base_url}")
+    
+    def ensure_http_client_open(self):
+        """Ensure HTTP client is open and ready for requests."""
+        if self.http.is_closed:
+            # Recreate HTTP client if it was closed
+            self.http = httpx.AsyncClient(
+                base_url=_get_bybit_endpoint(), 
+                timeout=20.0,
+                trust_env=False,
+                follow_redirects=True
+            )
+            print(f"🔧 HTTP client recreated for endpoint: {self.http.base_url}")
 
     async def _server_ms(self) -> int:
         """Get server time in milliseconds"""
@@ -115,11 +157,11 @@ class BybitClient:
         ts = self._ts_sync()
         # Use same serialization for signature and content
         body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
-        prehash = ts + BYBIT_API_KEY + BYBIT_RECV_WINDOW + body_str
+        prehash = ts + _get_bybit_api_key() + _get_bybit_recv_window() + body_str
         return {
-            "X-BAPI-API-KEY": BYBIT_API_KEY,
+            "X-BAPI-API-KEY": _get_bybit_api_key(),
             "X-BAPI-TIMESTAMP": ts,
-            "X-BAPI-RECV-WINDOW": BYBIT_RECV_WINDOW,
+            "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
             "X-BAPI-SIGN": _sign(prehash),
             "Content-Type": "application/json",
         }, body_str
@@ -127,14 +169,18 @@ class BybitClient:
     async def _get_auth(self, path: str, params: Dict[str, Any], retry_on_10002: bool = True):
         """GET with authentication and 10002 retry"""
         await self.sync_time()  # Ensure we have fresh offset
+        
+        # Ensure HTTP client is open
+        self.ensure_http_client_open()
+        
         # Build query string for signature
         query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
         ts = self._ts_sync()
-        prehash = ts + BYBIT_API_KEY + BYBIT_RECV_WINDOW + query_string
+        prehash = ts + _get_bybit_api_key() + _get_bybit_recv_window() + query_string
         headers = {
-            "X-BAPI-API-KEY": BYBIT_API_KEY,
+            "X-BAPI-API-KEY": _get_bybit_api_key(),
             "X-BAPI-TIMESTAMP": ts,
-            "X-BAPI-RECV-WINDOW": BYBIT_RECV_WINDOW,
+            "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
             "X-BAPI-SIGN": _sign(prehash),
         }
         try:
@@ -146,11 +192,11 @@ class BybitClient:
                 # Re-sync hard and retry once
                 await self.sync_time(force=True)
                 ts2 = self._ts_sync()
-                prehash2 = ts2 + BYBIT_API_KEY + BYBIT_RECV_WINDOW + query_string
+                prehash2 = ts2 + _get_bybit_api_key() + _get_bybit_recv_window() + query_string
                 headers2 = {
-                    "X-BAPI-API-KEY": BYBIT_API_KEY,
+                    "X-BAPI-API-KEY": _get_bybit_api_key(),
                     "X-BAPI-TIMESTAMP": ts2,
-                    "X-BAPI-RECV-WINDOW": BYBIT_RECV_WINDOW,
+                    "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
                     "X-BAPI-SIGN": _sign(prehash2),
                 }
                 r2 = await self.http.get(path, params=params, headers=headers2)
@@ -161,6 +207,10 @@ class BybitClient:
     async def _post_auth(self, path: str, body: Dict[str, Any], retry_on_10002: bool = True):
         """POST with authentication and 10002 retry"""
         await self.sync_time()  # Ensure we have fresh offset
+        
+        # Ensure HTTP client is open
+        self.ensure_http_client_open()
+        
         try:
             headers, body_str = self._headers_sync(body)
             r = await self.http.post(path, headers=headers, content=body_str)
@@ -187,6 +237,11 @@ class BybitClient:
         r = await self.http.get("/v5/market/instruments-info", params={"category":category,"symbol":symbol})
         r.raise_for_status()
         return _check_response(r.json())
+    
+    async def get_position(self, category: str, symbol: str):
+        """Get current position for a symbol"""
+        params = {"category": category, "symbol": symbol}
+        return await self._get_auth("/v5/position/list", params)
     
     async def symbol_exists(self, category: str, symbol: str) -> bool:
         """Check if a symbol exists on Bybit and is live/tradable"""
@@ -226,8 +281,22 @@ class BybitClient:
         body = {"category":category,"symbol":symbol,"buyLeverage":str(buy_leverage),"sellLeverage":str(sell_leverage)}
         return await self._post_auth("/v5/position/set-leverage", body)
 
-    async def place_order(self, body: Dict[str, Any]):
-        return await self._post_auth("/v5/order/create", body)
+    async def place_order(self, body: Dict[str, Any], max_retries: int = 3):
+        """Place order with retry logic for connection errors."""
+        for attempt in range(max_retries):
+            try:
+                return await self._post_auth("/v5/order/create", body)
+            except (httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as e:
+                if attempt < max_retries - 1:
+                    system_logger.warning(f"Order placement attempt {attempt + 1} failed: {e}. Retrying...")
+                    await asyncio.sleep(1)  # Wait 1 second before retry
+                    continue
+                else:
+                    system_logger.error(f"Order placement failed after {max_retries} attempts: {e}")
+                    raise
+            except Exception as e:
+                # For other errors, don't retry
+                raise
 
     async def cancel_all(self, category, symbol):
         body = {"category":category,"symbol":symbol}
@@ -335,3 +404,14 @@ class BybitClient:
             "symbol": symbol
         }
         return await self._get_auth("/v5/market/tickers", params)
+
+
+# Global singleton instance getter
+_global_bybit_client = None
+
+def get_bybit_client() -> BybitClient:
+    """Get the global singleton BybitClient instance."""
+    global _global_bybit_client
+    if _global_bybit_client is None:
+        _global_bybit_client = BybitClient()
+    return _global_bybit_client
