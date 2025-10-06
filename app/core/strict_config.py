@@ -88,10 +88,10 @@ class StrictSettings:
     # Whitelisted channel IDs (derived from mapping)
     source_whitelist: List[str] = list(channel_id_name_map.keys())
     
-    # Order type enforcement - DEMO ENVIRONMENT OPTIMIZATION
-    # Use Market orders for demo environment to ensure fills
-    entry_order_type: str = "Market"  # Market orders for immediate fills in demo
-    entry_time_in_force: str = "IOC"  # Immediate or Cancel for demo environment
+    # Order type enforcement - CLIENT RECOMMENDED SETTINGS
+    # Use safe, persistent order flags to make orders visible in Bybit Demo
+    entry_order_type: str = "Limit"  # Limit orders for visibility
+    entry_time_in_force: str = "GTC"  # Good Till Cancel - orders stay visible
     exit_order_type: str = "Stop"  # Stop orders for TP/SL triggers
     exit_reduce_only: bool = True
     exit_trigger_by: str = "MarkPrice"

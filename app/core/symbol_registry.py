@@ -63,6 +63,11 @@ class SymbolInfo:
         """Validate notional value meets minimum."""
         return notional >= self.min_notional
     
+    def validate_price(self, price: Decimal) -> bool:
+        """Validate price is within reasonable bounds."""
+        # Basic price validation - should be positive and not too extreme
+        return price > Decimal("0") and price < Decimal("1000000")
+    
     def get_max_leverage(self) -> Decimal:
         """Get maximum allowed leverage."""
         return min(self.max_leverage, STRICT_CONFIG.pyramid_levels[-1]["target_lev"])

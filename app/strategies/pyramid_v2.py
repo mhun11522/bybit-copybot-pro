@@ -34,9 +34,9 @@ class PyramidStrategyV2:
     async def check_and_activate(self, current_price: Decimal) -> bool:
         """Check if pyramid levels should be activated."""
         # Calculate gain from original entry
-        if self.direction == "BUY":
+        if self.direction == "LONG":
             gain_pct = (current_price - self.original_entry) / self.original_entry * 100
-        else:  # SELL
+        else:  # SHORT
             gain_pct = (self.original_entry - current_price) / self.original_entry * 100
         
         # Check each level
@@ -124,7 +124,7 @@ class PyramidStrategyV2:
                 avg_price = Decimal(str(position.get("avgPrice", "0")))
                 
                 # Calculate breakeven + small buffer
-                if self.direction == "BUY":
+                if self.direction == "LONG":
                     be_price = avg_price * Decimal("0.999")  # 0.1% below entry
                 else:  # SELL
                     be_price = avg_price * Decimal("1.001")  # 0.1% above entry
@@ -133,7 +133,7 @@ class PyramidStrategyV2:
                 order_body = {
                     "category": "linear",
                     "symbol": self.symbol,
-                    "side": "Sell" if self.direction == "BUY" else "Buy",
+                    "side": "Sell" if self.direction == "LONG" else "Buy",
                     "orderType": "Limit",
                     "qty": "0",  # Will be filled by position size
                     "price": str(be_price),
@@ -187,10 +187,15 @@ class PyramidStrategyV2:
                 
                 if size_difference > 0:
                     # Add to position
+                    # Convert direction to Bybit format for adding to position
+                    # For LONG positions: adding requires Buy orders
+                    # For SHORT positions: adding requires Sell orders
+                    bybit_side = "Buy" if self.direction == "LONG" else "Sell"
+                    
                     order_body = {
                         "category": "linear",
                         "symbol": self.symbol,
-                        "side": self.direction,
+                        "side": bybit_side,  # Correct side for adding to position
                         "orderType": "Market",
                         "qty": str(size_difference),
                         "timeInForce": "IOC",
@@ -223,11 +228,16 @@ class PyramidStrategyV2:
                 additional_size = (im_to_add * leverage) / avg_price
                 
                 if additional_size > 0:
+                    # Convert direction to Bybit format for adding margin
+                    # For LONG positions: adding margin requires Buy orders
+                    # For SHORT positions: adding margin requires Sell orders
+                    bybit_side = "Buy" if self.direction == "LONG" else "Sell"
+                    
                     # Add to position
                     order_body = {
                         "category": "linear",
                         "symbol": self.symbol,
-                        "side": self.direction,
+                        "side": bybit_side,  # Correct side for adding margin
                         "orderType": "Market",
                         "qty": str(additional_size),
                         "timeInForce": "IOC",

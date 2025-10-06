@@ -288,63 +288,51 @@ class ConfirmationGate:
                     else:
                         processed_sl = Decimal(str(sl))
                 
-                # Place TP orders
-                for i, tp_price in enumerate(processed_tps):
-                    # Convert side to Bybit format and reverse for exit
-                    bybit_side = "Buy" if side == "LONG" else "Sell"
-                    exit_side = "Sell" if bybit_side == "Buy" else "Buy"
-                    
-                    order_body = {
-                        "category": STRICT_CONFIG.supported_categories[0],
-                        "symbol": symbol,
-                        "side": exit_side,
-                        "orderType": STRICT_CONFIG.exit_order_type,
-                        "qty": str(qty),
-                        "triggerPrice": str(tp_price),  # Use triggerPrice for Stop orders
-                        "timeInForce": "GTC",
-                        "reduceOnly": STRICT_CONFIG.exit_reduce_only,
-                        "positionIdx": 0,
-                        "triggerBy": STRICT_CONFIG.exit_trigger_by,
-                        "orderLinkId": f"{operation_id}_tp_{i}"
-                    }
-                    
+                # Apply TP via trading-stop (first TP only; multi-TP would require partial close logic)
+                if processed_tps:
                     try:
-                        result = await client.place_order(order_body)
-                        order_results.append(result)
-                        system_logger.info(f"TP order placed successfully: {result}")
+                        tp_price = processed_tps[0]
+                        system_logger.info(f"Setting TP via trading-stop: {symbol} TP={tp_price}")
+                        
+                        # Determine correct trigger direction for TP
+                        # For LONG positions: TP triggers on price rise (Rise)
+                        # For SHORT positions: TP triggers on price fall (Fall)
+                        tp_trigger_direction = "Rise" if side == "LONG" else "Fall"
+                        
+                        await client.set_trading_stop(
+                            STRICT_CONFIG.supported_categories[0],
+                            symbol,
+                            stop_loss=None,
+                            take_profit=tp_price,
+                            tp_order_type="Limit",
+                            tp_trigger_by=STRICT_CONFIG.exit_trigger_by,
+                            tp_trigger_direction=tp_trigger_direction,
+                        )
+                        order_results.append({"tpTradingStop": str(tp_price)})
                     except Exception as e:
-                        system_logger.error(f"Failed to place TP order: {e}")
-                        # Continue with other orders even if one fails
-                        pass
+                        system_logger.error(f"Failed to set TP via trading-stop: {e}")
                 
-                # Place SL order
+                # Apply SL via trading-stop
                 if processed_sl:
-                    # Convert side to Bybit format and reverse for exit
-                    bybit_side = "Buy" if side == "LONG" else "Sell"
-                    exit_side = "Sell" if bybit_side == "Buy" else "Buy"
-                    
-                    sl_order_body = {
-                        "category": STRICT_CONFIG.supported_categories[0],
-                        "symbol": symbol,
-                        "side": exit_side,
-                        "orderType": STRICT_CONFIG.exit_order_type,
-                        "qty": str(qty),
-                        "triggerPrice": str(processed_sl),  # Use triggerPrice for Stop orders
-                        "timeInForce": "GTC",
-                        "reduceOnly": STRICT_CONFIG.exit_reduce_only,
-                        "positionIdx": 0,
-                        "triggerBy": STRICT_CONFIG.exit_trigger_by,
-                        "orderLinkId": f"{operation_id}_sl"
-                    }
-                    
                     try:
-                        result = await client.place_order(sl_order_body)
-                        order_results.append(result)
-                        system_logger.info(f"SL order placed successfully: {result}")
+                        system_logger.info(f"Setting SL via trading-stop: {symbol} SL={processed_sl}")
+                        
+                        # Determine correct trigger direction for SL
+                        # For LONG positions: SL triggers on price fall (Fall)
+                        # For SHORT positions: SL triggers on price rise (Rise)
+                        sl_trigger_direction = "Fall" if side == "LONG" else "Rise"
+                        
+                        await client.set_trading_stop(
+                            STRICT_CONFIG.supported_categories[0],
+                            symbol,
+                            stop_loss=processed_sl,
+                            sl_order_type="Market",
+                            sl_trigger_by=STRICT_CONFIG.exit_trigger_by,
+                            sl_trigger_direction=sl_trigger_direction,
+                        )
+                        order_results.append({"slTradingStop": str(processed_sl)})
                     except Exception as e:
-                        system_logger.error(f"Failed to place SL order: {e}")
-                        # Continue even if SL fails
-                        pass
+                        system_logger.error(f"Failed to set SL via trading-stop: {e}")
                 
                 return {
                     'retCode': 0,
@@ -442,6 +430,43 @@ class ConfirmationGate:
             operation_id, bybit_operation, telegram_callback
         )
     
+    async def _validate_order_parameters(self, order_body: Dict[str, Any], symbol_info) -> Dict[str, Any]:
+        """Validate order parameters to prevent auto-cancellation (client recommendation)."""
+        try:
+            # Check if order would be auto-cancelled
+            if order_body.get('timeInForce') == 'IOC':
+                return {'valid': False, 'reason': 'IOC orders are auto-cancelled if not filled immediately'}
+            
+            if order_body.get('timeInForce') == 'FOK':
+                return {'valid': False, 'reason': 'FOK orders are auto-cancelled if not filled completely'}
+            
+            # Check postOnly parameter
+            if order_body.get('postOnly') and order_body.get('orderType') == 'Limit':
+                # PostOnly orders are cancelled if they would cross the book
+                # This is acceptable for limit orders, but log it
+                system_logger.info("PostOnly order - will be cancelled if price crosses book")
+            
+            # Check reduceOnly parameter
+            if order_body.get('reduceOnly') and order_body.get('orderType') == 'Market':
+                return {'valid': False, 'reason': 'Market orders with reduceOnly may be cancelled'}
+            
+            # Validate quantity
+            if symbol_info:
+                qty = Decimal(str(order_body.get('qty', '0')))
+                if not symbol_info.validate_qty(qty):
+                    return {'valid': False, 'reason': f'Invalid quantity {qty} for symbol constraints'}
+            
+            # Validate price for limit orders
+            if order_body.get('orderType') == 'Limit' and 'price' in order_body:
+                price = Decimal(str(order_body['price']))
+                if symbol_info and not symbol_info.validate_price(price):
+                    return {'valid': False, 'reason': f'Invalid price {price} for symbol constraints'}
+            
+            return {'valid': True, 'reason': 'Order parameters are valid'}
+            
+        except Exception as e:
+            return {'valid': False, 'reason': f'Validation error: {e}'}
+
     async def _place_order_with_retry(self, client, symbol: str, side: str, qty: Decimal, price: Decimal, order_link_id: str, max_retries: int = 10) -> Dict[str, Any]:
         """Place order (Market or Limit) with retry logic."""
         from decimal import Decimal, ROUND_DOWN, ROUND_UP

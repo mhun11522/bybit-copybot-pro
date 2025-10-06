@@ -110,13 +110,14 @@ class PositionCalculator:
             # IM = risk% * wallet_balance * channel_multiplier
             base_im = wallet_balance * risk_pct * channel_risk_multiplier
             
-            # DEMO ENVIRONMENT: Use very conservative position sizing
-            # For demo environment, use much smaller positions to avoid "ab not enough" errors
+            # DEMO ENVIRONMENT: Use conservative position sizing
+            # For demo environment, use conservative sizing to avoid "ab not enough" errors
+            # but ensure 5 USDT minimum notional is met
             from app.core.demo_config import DemoConfig
             if DemoConfig.is_demo_environment():
-                # Demo environment: Use very conservative sizing
-                conservative_multiplier = Decimal("0.01")  # 1% of calculated IM
-                min_im = Decimal("5.0")   # 5 USDT minimum for demo
+                # Demo environment: Use conservative sizing that ensures 5 USDT minimum
+                conservative_multiplier = Decimal("0.05")  # 5% of calculated IM (increased from 1%)
+                min_im = Decimal("10.0")   # 10 USDT minimum for demo (increased from 5.0)
                 price_tier = "DEMO_CONSERVATIVE"
             else:
                 # Live environment: Dynamic position sizing based on token price range

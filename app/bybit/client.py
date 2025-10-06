@@ -14,7 +14,7 @@ def _get_bybit_api_secret():
     return os.getenv("BYBIT_API_SECRET", "")
 
 def _get_bybit_recv_window():
-    return os.getenv("BYBIT_RECV_WINDOW", "30000")
+    return os.getenv("BYBIT_RECV_WINDOW", "5000")
 
 class BybitAPIError(Exception):
     """Raised when Bybit API returns retCode != 0"""
@@ -55,6 +55,7 @@ def _headers(body: Dict[str, Any]):
         "X-BAPI-TIMESTAMP": ts,
         "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
         "X-BAPI-SIGN": _sign(prehash),
+        "X-BAPI-SIGN-TYPE": "2",
         "Content-Type": "application/json",
     }
 
@@ -67,6 +68,7 @@ def _headers_get(params: str = ""):
         "X-BAPI-TIMESTAMP": ts,
         "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
         "X-BAPI-SIGN": _sign(prehash),
+        "X-BAPI-SIGN-TYPE": "2",
     }
 
 class BybitClient:
@@ -163,18 +165,22 @@ class BybitClient:
             "X-BAPI-TIMESTAMP": ts,
             "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
             "X-BAPI-SIGN": _sign(prehash),
+            "X-BAPI-SIGN-TYPE": "2",
             "Content-Type": "application/json",
         }, body_str
 
     async def _get_auth(self, path: str, params: Dict[str, Any], retry_on_10002: bool = True):
-        """GET with authentication and 10002 retry"""
+        """GET with authentication and 10002 retry. Ensures the signed query exactly matches the sent query."""
+        from urllib.parse import urlencode
         await self.sync_time()  # Ensure we have fresh offset
         
         # Ensure HTTP client is open
         self.ensure_http_client_open()
         
-        # Build query string for signature
-        query_string = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
+        # Build a deterministic, URL-encoded query string (sorted by key)
+        sorted_items = sorted(params.items())
+        query_string = urlencode(sorted_items, doseq=False)
+        
         ts = self._ts_sync()
         prehash = ts + _get_bybit_api_key() + _get_bybit_recv_window() + query_string
         headers = {
@@ -182,9 +188,11 @@ class BybitClient:
             "X-BAPI-TIMESTAMP": ts,
             "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
             "X-BAPI-SIGN": _sign(prehash),
+            "X-BAPI-SIGN-TYPE": "2",
         }
+        full_path = f"{path}?{query_string}" if query_string else path
         try:
-            r = await self.http.get(path, params=params, headers=headers)
+            r = await self.http.get(full_path, headers=headers)
             r.raise_for_status()
             return _check_response(r.json())
         except BybitAPIError as e:
@@ -198,8 +206,9 @@ class BybitClient:
                     "X-BAPI-TIMESTAMP": ts2,
                     "X-BAPI-RECV-WINDOW": _get_bybit_recv_window(),
                     "X-BAPI-SIGN": _sign(prehash2),
+                    "X-BAPI-SIGN-TYPE": "2",
                 }
-                r2 = await self.http.get(path, params=params, headers=headers2)
+                r2 = await self.http.get(full_path, headers=headers2)
                 r2.raise_for_status()
                 return _check_response(r2.json())
             raise
@@ -379,19 +388,26 @@ class BybitClient:
         }
         return await self.place_order(body)
 
-    async def set_trading_stop(self, category, symbol, stop_loss, sl_order_type="Market", sl_trigger_by="MarkPrice"):
+    async def set_trading_stop(self, category, symbol, stop_loss: Any = None, take_profit: Any = None,
+                               sl_order_type: str = "Market", sl_trigger_by: str = "MarkPrice",
+                               tp_order_type: str = "Limit", tp_trigger_by: str = "MarkPrice"):
         """
-        Amend position stop-loss using /v5/position/trading-stop (V5).
-        This is the cleanest way to push SL to B/E after TP2.
+        Amend TP/SL using /v5/position/trading-stop (V5).
+        Only provided fields are sent; both TP and SL are optional.
         """
-        body = {
+        body: Dict[str, Any] = {
             "category": category,
             "symbol": symbol,
-            "stopLoss": str(stop_loss),
-            "slOrderType": sl_order_type,
-            "slTriggerBy": sl_trigger_by,
             "positionIdx": 0
         }
+        if stop_loss is not None:
+            body["stopLoss"] = str(stop_loss)
+            body["slOrderType"] = sl_order_type
+            body["slTriggerBy"] = sl_trigger_by
+        if take_profit is not None:
+            body["takeProfit"] = str(take_profit)
+            body["tpOrderType"] = tp_order_type
+            body["tpTriggerBy"] = tp_trigger_by
         body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
         r = await self.http.post("/v5/position/trading-stop", headers=_headers(body), content=body_str)
         r.raise_for_status()
