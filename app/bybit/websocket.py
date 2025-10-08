@@ -38,7 +38,8 @@ class BybitWebSocket:
         
         # Heartbeat
         self.last_pong = time.time()
-        self.ping_interval = 20  # Send ping every 20 seconds
+        self.ping_interval = 30  # Send ping every 30 seconds (increased from 20)
+        self.pong_timeout = 90   # Increased pong timeout to 90 seconds
         
     def _generate_auth_signature(self) -> dict:
         """Generate authentication payload for private WebSocket (Bybit V5)
@@ -46,6 +47,7 @@ class BybitWebSocket:
         Official format from: https://bybit-exchange.github.io/docs/v5/ws/connect#authentication
         """
         # Generate expires timestamp in milliseconds (as integer)
+        # Use current time + 1 second for expiration
         expires = int((time.time() + 1) * 1000)
         
         # Sign the payload: signature = HMAC_SHA256("GET/realtime{expires}", secret)
@@ -56,6 +58,8 @@ class BybitWebSocket:
             bytes(sign_str, "utf-8"),
             digestmod="sha256"
         ).hexdigest())
+        
+        # (do not log API keys or signatures)
         
         return {
             "op": "auth",
@@ -192,8 +196,8 @@ class BybitWebSocket:
                 await self.ws.send(json.dumps(ping_msg))
                 
                 # Check if we received pong recently
-                if time.time() - self.last_pong > 60:
-                    print("⚠️  No pong received in 60s, reconnecting...")
+                if time.time() - self.last_pong > self.pong_timeout:
+                    print(f"⚠️  No pong received in {self.pong_timeout}s, reconnecting...")
                     await self.reconnect()
                     
             except Exception as e:
@@ -230,8 +234,8 @@ class BybitWebSocket:
         if self.ws:
             try:
                 await self.ws.close()
-            except:
-                pass
+            except Exception as e:
+                system_logger.warning(f"Error closing WebSocket: {e}")
         
         # Wait a bit before reconnecting
         await asyncio.sleep(2)

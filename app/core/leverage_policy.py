@@ -92,13 +92,16 @@ class LeveragePolicy:
         # Calculate dynamic leverage based on IM target and position size
         base_leverage = STRICT_CONFIG.min_dynamic_leverage
         
-        # Add some randomness to make it look more dynamic (12.01, 15.67, etc.)
-        import random
-        random_factor = Decimal(str(random.uniform(1.0, 2.0)))
-        dynamic_leverage = base_leverage * random_factor
+        # Use deterministic calculation based on IM target
+        # Higher IM targets can use higher leverage
+        if hasattr(STRICT_CONFIG, 'im_target'):
+            im_factor = min(STRICT_CONFIG.im_target / Decimal("20"), Decimal("2.5"))  # Max 2.5x factor
+            dynamic_leverage = base_leverage * im_factor
+        else:
+            dynamic_leverage = base_leverage
         
-        # Round to 2 decimal places for realistic dynamic values
-        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+        # Round to 1 decimal place for realistic dynamic values
+        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.1'), rounding=ROUND_DOWN)
         
         # Ensure it's within bounds
         dynamic_leverage = max(dynamic_leverage, STRICT_CONFIG.min_dynamic_leverage)
@@ -126,5 +129,6 @@ class LeveragePolicy:
         for pattern in cross_patterns:
             if re.search(pattern, message, re.IGNORECASE):
                 system_logger.warning(f"Cross margin detected in signal: {pattern}")
+                # Reject Cross margin to comply with client policy
                 return True
         return False

@@ -56,7 +56,7 @@ def is_live_trading() -> bool:
 
 def is_dry_run() -> bool:
     """Check if dry run mode is enabled."""
-    return TRADING_MODE == "LIVE"
+    return TRADING_MODE == "DRY_RUN"
 
 def get_channel_risk_multiplier(channel_name: str) -> float:
     """Get risk multiplier for a channel."""

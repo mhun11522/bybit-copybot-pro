@@ -45,7 +45,7 @@ class StrictSettings:
     weekly_report_day: int = 5          # Saturday (0=Monday, 5=Saturday)
     
     # Bybit configuration
-    bybit_endpoint: str = "https://api-demo.bybit.com"
+    bybit_endpoint: str = "https://api-testnet.bybit.com"
     bybit_recv_window: str = "30000"
     bybit_api_key: str = ""
     
@@ -82,17 +82,24 @@ class StrictSettings:
         "-1002339729195": "VIP Trading Channel",
         "-1001594157621": "Elite Trading Signals",
         "-1002633265221": "Pro Trading Channel",
-        "-1001173711569": "Advanced Trading Signals"
+        "-1001173711569": "Advanced Trading Signals",
+        # Additional channels found in logs
+        "-1002460891279": "Unknown Channel 1",
+        "-1001604036547": "Unknown Channel 2",
+        "-1002259852182": "Unknown Channel 3",
+        "-1001744615878": "Unknown Channel 4", 
+        "-1001648417896": "Unknown Channel 3",
+        "-1001536269316": "Unknown Channel 4"  # Found in recent logs
     }
     
     # Whitelisted channel IDs (derived from mapping)
     source_whitelist: List[str] = list(channel_id_name_map.keys())
     
-    # Order type enforcement - CLIENT RECOMMENDED SETTINGS
-    # Use safe, persistent order flags to make orders visible in Bybit Demo
-    entry_order_type: str = "Limit"  # Limit orders for visibility
-    entry_time_in_force: str = "GTC"  # Good Till Cancel - orders stay visible
-    exit_order_type: str = "Stop"  # Stop orders for TP/SL triggers
+    # Order type enforcement - CLIENT SPECIFICATION
+    # Entries must ALWAYS be Limit orders (never Conditional)
+    entry_order_type: str = "Limit"  # Limit orders for deterministic execution
+    entry_time_in_force: str = "PostOnly"  # Post-Only for maker orders (CLIENT REQUIREMENT)
+    exit_order_type: str = "Market"  # Market orders for TP/SL (Conditional)
     exit_reduce_only: bool = True
     exit_trigger_by: str = "MarkPrice"
     
@@ -138,7 +145,7 @@ def load_strict_config() -> StrictSettings:
         config.telegram_api_id = int(os.getenv("TELEGRAM_API_ID", "0"))
         config.telegram_api_hash = os.getenv("TELEGRAM_API_HASH", "")
         config.telegram_session = os.getenv("TELEGRAM_SESSION", "bybit_copybot_session")
-        config.bybit_endpoint = os.getenv("BYBIT_ENDPOINT", "https://api-demo.bybit.com")
+        config.bybit_endpoint = os.getenv("BYBIT_ENDPOINT", "https://api-testnet.bybit.com")
         config.bybit_recv_window = os.getenv("BYBIT_RECV_WINDOW", "30000")
         
         # Load channel ID to name mapping from environment
@@ -157,6 +164,16 @@ def load_strict_config() -> StrictSettings:
             print(f"Loaded {len(config.source_whitelist)} whitelisted channels from environment")
         else:
             print("CHANNEL_ID_NAME_MAP environment variable not set, using default channels")
+            # Use all available channels from the mapping as whitelisted
+            config.source_whitelist = list(config.channel_id_name_map.keys())
+            print(f"Whitelisted {len(config.source_whitelist)} default channels")
+        
+        # Merge with ALLOWED_CHANNEL_IDS from environment if provided
+        from app.config.settings import ALLOWED_CHANNEL_IDS
+        if ALLOWED_CHANNEL_IDS:
+            additional_channels = [str(ch_id) for ch_id in ALLOWED_CHANNEL_IDS if str(ch_id) not in config.source_whitelist]
+            config.source_whitelist.extend(additional_channels)
+            print(f"Added {len(additional_channels)} additional channels from ALLOWED_CHANNEL_IDS")
         
         # Override with existing settings if available
         try:
@@ -171,8 +188,8 @@ def load_strict_config() -> StrictSettings:
             config.telegram_session = TELEGRAM_SESSION
             config.bybit_endpoint = BYBIT_ENDPOINT
             config.bybit_recv_window = BYBIT_RECV_WINDOW
-        except ImportError:
-            pass
+        except ImportError as e:
+            system_logger.warning(f"Optional module not available: {e}")
         
         # Validate configuration
         if not config.bybit_api_key:

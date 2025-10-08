@@ -110,40 +110,24 @@ class PositionCalculator:
             # IM = risk% * wallet_balance * channel_multiplier
             base_im = wallet_balance * risk_pct * channel_risk_multiplier
             
-            # DEMO ENVIRONMENT: Use conservative position sizing
-            # For demo environment, use conservative sizing to avoid "ab not enough" errors
-            # but ensure 5 USDT minimum notional is met
-            from app.core.demo_config import DemoConfig
-            if DemoConfig.is_demo_environment():
-                # Demo environment: Use conservative sizing that ensures 5 USDT minimum
-                conservative_multiplier = Decimal("0.05")  # 5% of calculated IM (increased from 1%)
-                min_im = Decimal("10.0")   # 10 USDT minimum for demo (increased from 5.0)
-                price_tier = "DEMO_CONSERVATIVE"
-            else:
-                # Live environment: Dynamic position sizing based on token price range
-                if entry_price < Decimal("0.001"):
-                    conservative_multiplier = Decimal("10.0")
-                    min_im = Decimal("200.0")
-                    price_tier = "EXTREME_ULTRA_LOW"
-                elif entry_price < Decimal("0.01"):
-                    conservative_multiplier = Decimal("8.0")
-                    min_im = Decimal("150.0")
-                    price_tier = "ULTRA_LOW"
-                elif entry_price < Decimal("0.1"):
-                    conservative_multiplier = Decimal("5.0")
-                    min_im = Decimal("100.0")
-                    price_tier = "LOW"
-                elif entry_price < Decimal("1.0"):
-                    conservative_multiplier = Decimal("3.0")
-                    min_im = Decimal("75.0")
-                    price_tier = "MEDIUM"
-                else:
-                    conservative_multiplier = Decimal("1.0")
-                    min_im = Decimal("25.0")
-                    price_tier = "HIGH"
-            
-            im = base_im * conservative_multiplier
+            # Simplified position sizing based on client requirements
+            # Client specified: 20 USDT IM per trade, 2% risk, 401.2 USDT wallet
+            # Use exact client requirements without complex multipliers
+            im = base_im  # Use calculated IM directly
+            min_im = Decimal("20.0")  # Client requirement: 20 USDT minimum
             im = max(im, min_im)
+            
+            # Ensure IM doesn't exceed reasonable limits
+            max_im = Decimal("100.0")  # Client requirement: max 100 USDT per trade
+            im = min(im, max_im)
+            
+            # Determine price tier for debugging
+            if entry_price < Decimal("1.0"):
+                price_tier = "LOW_PRICE"
+            elif entry_price < Decimal("100.0"):
+                price_tier = "MEDIUM_PRICE"
+            else:
+                price_tier = "HIGH_PRICE"
             
             # Use the client's exact formula for contract calculation
             try:
@@ -190,7 +174,7 @@ class PositionCalculator:
                 'leverage': float(leverage),
                 'entry_price': float(entry_price),
                 'price_tier': price_tier,
-                'conservative_multiplier': float(conservative_multiplier),
+                'conservative_multiplier': 1.0,  # Default value for debugging
                 'min_im': float(min_im),
                 'final_contracts': float(final_contracts),
                 'final_notional': float(final_notional),

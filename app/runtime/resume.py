@@ -3,8 +3,7 @@ from decimal import Decimal
 from app.strategies.trailing_v2 import TrailingStopStrategyV2
 from app.strategies.hedge_v2 import HedgeStrategyV2
 from app.strategies.breakeven_v2 import BreakevenStrategyV2
-
-DB_PATH="trades.sqlite"
+from app.storage.db import DB_PATH
 
 async def resume_open_trades():
     try:
@@ -25,8 +24,32 @@ async def resume_open_trades():
             trail = TrailingStopStrategyV2(tid, sym, dir_, Decimal(str(avg)), Decimal(str(pos)), chan)
             hedge = HedgeStrategyV2(tid, sym, dir_, Decimal(str(avg)), Decimal(str(pos)), int(lev), chan)
             tp2   = BreakevenStrategyV2(tid, sym, dir_, Decimal(str(avg)), chan)
-            asyncio.create_task(trail.run())
-            asyncio.create_task(hedge.run())
-            asyncio.create_task(tp2.run())
-    except Exception:
-        pass
+            # Create tasks with proper cleanup tracking
+            trail_task = asyncio.create_task(trail.run())
+            hedge_task = asyncio.create_task(hedge.run())
+            tp2_task = asyncio.create_task(tp2.run())
+            
+            # Store tasks for cleanup
+            if not hasattr(resume_open_trades, '_active_tasks'):
+                resume_open_trades._active_tasks = set()
+            
+            resume_open_trades._active_tasks.update([trail_task, hedge_task, tp2_task])
+            
+            # Add done callbacks to remove completed tasks
+            for task in [trail_task, hedge_task, tp2_task]:
+                task.add_done_callback(lambda t: resume_open_trades._active_tasks.discard(t))
+    except Exception as e:
+        system_logger.error(f"Error resuming trade strategies: {e}", exc_info=True)
+
+async def cleanup_resume_tasks():
+    """Clean up all active resume tasks"""
+    if hasattr(resume_open_trades, '_active_tasks'):
+        active_tasks = resume_open_trades._active_tasks.copy()
+        if active_tasks:
+            system_logger.info(f"Cancelling {len(active_tasks)} active resume tasks")
+            for task in active_tasks:
+                if not task.done():
+                    task.cancel()
+            # Wait for tasks to complete
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+            resume_open_trades._active_tasks.clear()

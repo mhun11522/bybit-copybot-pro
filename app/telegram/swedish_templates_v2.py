@@ -19,11 +19,14 @@ class SwedishTemplatesV2:
         leverage_str = f"x{int(leverage)}" if leverage == int(leverage) else f"x{leverage}"
         
         if mode == "SWING":
-            return f"""📢 SIGNAL MOTTAGEN & KOPIERAD
+            return f"""✅ Signal mottagen & kopierad
+🕒 Tid: {datetime.now().strftime('%H:%M:%S')}
 📢 Från kanal: {channel_name}
 📊 Symbol: {symbol}
 📈 Riktning: {direction}
-🎯 Strategi: SWING {leverage_str}
+📍 Typ: Swing
+
+⚙️ Hävstång: {leverage_str}
 💰 IM: ~20 USDT
 
 ⏳ Väntar på Bybit bekräftelse..."""
@@ -45,6 +48,77 @@ class SwedishTemplatesV2:
 📈 Riktning: {direction}
 🎯 Strategi: DYNAMISK {leverage_str}
 💰 IM: ~20 USDT
+
+⏳ Väntar på Bybit bekräftelse..."""
+    
+    @staticmethod
+    def hedge_activated(signal_data: Dict[str, Any]) -> str:
+        """Hedge activated template."""
+        symbol = signal_data.get('symbol', '')
+        channel_name = signal_data.get('channel_name', '')
+        loss_pct = signal_data.get('loss_pct', '0.00')
+        
+        return f"""🛡️ HEDGE / VÄNDNING AKTIVERAD
+📢 Från kanal: {channel_name}
+📊 Symbol: {symbol}
+
+📍 Trigger: -{loss_pct}%
+🔄 Motriktad position öppnad
+💰 Storlek: 100% av ursprunglig position
+
+⏳ Väntar på Bybit bekräftelse..."""
+    
+    @staticmethod
+    def reentry_attempted(signal_data: Dict[str, Any]) -> str:
+        """Re-entry attempted template."""
+        symbol = signal_data.get('symbol', '')
+        channel_name = signal_data.get('channel_name', '')
+        attempt = signal_data.get('attempt', 1)
+        
+        return f"""♻️ RE-ENTRY / ÅTERINTRÄDE AKTIVERAD
+📢 Från kanal: {channel_name}
+📊 Symbol: {symbol}
+📈 Sida: {signal_data.get('direction', '')}
+
+💥 Entry: {signal_data.get('entry', '')}
+⚙️ Hävstång: {signal_data.get('leverage', '')}x
+💰 IM: {signal_data.get('im', '')} USDT
+
+🔄 Försök: {attempt}/3
+
+⏳ Väntar på Bybit bekräftelse..."""
+    
+    @staticmethod
+    def breakeven_activated(signal_data: Dict[str, Any]) -> str:
+        """Breakeven activated template."""
+        symbol = signal_data.get('symbol', '')
+        channel_name = signal_data.get('channel_name', '')
+        gain_pct = signal_data.get('gain_pct', '0.00')
+        
+        return f"""⚖️ BREAK-EVEN JUSTERAD
+📢 Från kanal: {channel_name}
+📊 Symbol: {symbol}
+
+📍 Trigger: +{gain_pct}%
+📍 SL flyttad till: Breakeven + kostnader (0.0015%)
+
+⏳ Väntar på Bybit bekräftelse..."""
+    
+    @staticmethod
+    def trailing_stop_activated(signal_data: Dict[str, Any]) -> str:
+        """Trailing stop activated template."""
+        symbol = signal_data.get('symbol', '')
+        channel_name = signal_data.get('channel_name', '')
+        gain_pct = signal_data.get('gain_pct', '0.00')
+        
+        return f"""🔄 TRAILING STOP AKTIVERAD
+📢 Från kanal: {channel_name}
+📊 Symbol: {symbol}
+📈 Riktning: {signal_data.get('direction', '')}
+
+📍 Trigger: +{gain_pct}%
+📍 Avstånd: 2.5% bakom pris
+📍 Ny SL: {signal_data.get('new_sl', '')}
 
 ⏳ Väntar på Bybit bekräftelse..."""
     

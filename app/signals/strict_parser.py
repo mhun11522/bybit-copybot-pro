@@ -11,31 +11,24 @@ class StrictSignalParser:
     """Strict signal parser implementing exact client requirements."""
     
     def __init__(self):
-        # Symbol patterns (USDT perps only) - Comprehensive coverage
+        # Symbol patterns (USDT perps only) - Strict USDT-only coverage
         self.symbol_patterns = [
-            # Mixed case trading pairs (A2z/USDT format)
-            r'\b([A-Za-z0-9]{2,10}/(?:USDT|USDC|EUR|GBP|JPY|CAD|AUD|CHF|CNY|BTC|ETH|USD|NZD|DKK|SEK|NOK|PLN|CZK|HUF|RUB|TRY|ZAR|BRL|MXN|INR|KRW|SGD|HKD|TWD|THB|MYR|IDR|PHP|VND))\b',
-            # Complete trading pairs (don't add USDT suffix)
-            r'\b([A-Z]{2,10}(?:USDT|USDC|EUR|GBP|JPY|CAD|AUD|CHF|CNY|BTC|ETH|USD|NZD|DKK|SEK|NOK|PLN|CZK|HUF|RUB|TRY|ZAR|BRL|MXN|INR|KRW|SGD|HKD|TWD|THB|MYR|IDR|PHP|VND))\b',
-            r'\b([A-Z]{2,10}(?:USDT|USDC|EUR|GBP|JPY|CAD|AUD|CHF|CNY|BTC|ETH|USD|NZD|DKK|SEK|NOK|PLN|CZK|HUF|RUB|TRY|ZAR|BRL|MXN|INR|KRW|SGD|HKD|TWD|THB|MYR|IDR|PHP|VND)\.P)\b',  # Perpetual contracts
+            # USDT trading pairs only
+            r'\b([A-Z0-9]{2,10})/USDT\b',           # e.g. CRV/USDT
+            r'\b([A-Z]{2,10}USDT(?:\.P)?)\b',       # e.g. CRVUSDT or CRVUSDT.P
             
-            # New patterns for failing signal formats
+            # Channel-specific emojis/hashtags (USDT only)
             r'💎\s*([A-Z0-9]+)/USDT',  # 💎 1000FLOKI/USDT
             r'💎([A-Z0-9]+)/USDT',  # 💎1000CHEEMS/USDT
             r'#([A-Z0-9]+)/USDT',  # #XVS/USDT
-            # Standard USDT pairs
-            r'([A-Z]{2,10}USDT)',
-            r'([A-Z]{2,10}USDT\.P)',  # Perpetual contracts
-            r'#([A-Z]{2,10})',  # #DRIFT format
-            r'#([A-Z]{2,10})/USDT',  # #APT/USDT
+            r'💎\s*BUY\s*#([A-Z0-9]+)/USDT',  # 💎 BUY #WLD/USDT
+            r'Coin:\s*#([A-Z0-9]+)/USDT',  # Coin: #DOOD/USDT
+            r'Pair:\s*#([A-Z0-9]+)/USDT',  # Pair: #1000FLOKI/USDT
+            r'Moneda:\s*#([A-Z0-9]+)/usdt',  # Spanish: Moneda: #DOOD/usdt
             r'#([A-Z]{2,10})USDT',  # #APTUSDT
             r'🪙\s*([A-Z]{2,10})/USDT',  # 🪙 VIRTUAL/USDT
-            r'💎\s*BUY\s*#([A-Z]{2,10})/USDT',  # 💎 BUY #WLD/USDT
             r'🟢\s*Symbol:\s*([A-Z]{2,10}USDT)',  # Smart Crypto format
             r'🔵\s*Symbol:\s*([A-Z]{2,10}USDT)',  # Smart Crypto SHORT format
-            r'Coin:\s*#([A-Z]{2,10})/USDT',  # Premium signal format
-            r'Pair:\s*#([A-Z]{2,10})/USDT',  # Lux Leak format
-            r'Moneda:\s*#([A-Z]{2,10})/usdt',  # Spanish format
             r'Exchange:.*?#([A-Z]{2,10})/USDT',  # Multi-exchange format
             r'📍Mynt:\s*#([A-Z]{2,10})/USDT',  # Swedish format
             r'📍\*Mynt:\s*#([A-Z]{2,10})/USDT',  # Swedish format with asterisk
@@ -50,10 +43,8 @@ class StrictSignalParser:
             r'#([A-Z0-9]{2,10})USDT',  # #RSS3USDT format
             r'💎\s*BUY\s*#([A-Z0-9]{2,10})/USDT',  # 💎 BUY #RSS3/USDT
             r'💎\s*SELL\s*#([A-Z0-9]{2,10})/USDT',  # 💎 SELL #RSS3/USDT
-            # Mixed case trading pairs with currency suffixes
-            r'\b([A-Za-z0-9]{2,10}/(?:USDT|USDC|EUR|GBP|JPY|CAD|AUD|CHF|CNY|BTC|ETH|USD|NZD|DKK|SEK|NOK|PLN|CZK|HUF|RUB|TRY|ZAR|BRL|MXN|INR|KRW|SGD|HKD|TWD|THB|MYR|IDR|PHP|VND))\b',  # A2z/USDT, PYTHDOWN/USDT
-            # GOLD trading patterns
-            r'🌟GOLD\s+(?:Buy|Sell|Long|Short)',  # 🌟GOLD Buy/Sell
+            # Additional USDT patterns for mixed case
+            r'\b([A-Za-z0-9]{2,10})/USDT\b',  # Mixed case USDT pairs
         ]
         
         # Direction patterns (comprehensive coverage)
@@ -249,15 +240,17 @@ class StrictSignalParser:
             if not symbol:
                 return None
             
-            # Validate symbol is tradeable on Bybit
+            # Validate symbol is tradeable on Bybit with fallback logic
             from app.core.symbol_registry import get_symbol_registry
             registry = await get_symbol_registry()
             symbol_info = await registry.get_symbol_info(symbol)
+            
+            # If symbol not found, reject (no unsafe fallbacks)
             if not symbol_info or not symbol_info.is_trading:
                 system_logger.debug("Signal parsing failed", {
                     'text': message[:100],
                     'channel': channel_name,
-                    'reason': f'Symbol {symbol} not tradeable on Bybit (not available or not trading)'
+                    'reason': f'Symbol {symbol} not tradeable on Bybit (USDT-only, no fallbacks)'
                 })
                 return None
             
@@ -375,12 +368,11 @@ class StrictSignalParser:
                     # Convert slash format to Bybit format (e.g., CRV/USDT -> CRVUSDT)
                     if '/' in symbol:
                         symbol = symbol.replace('/', '')
-                    # Only add USDT suffix if symbol doesn't already have a currency suffix
-                    if not symbol.endswith(('USDT', 'USDC', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'BTC', 'ETH', 'USD', 'NZD', 'DKK', 'SEK', 'NOK', 'PLN', 'CZK', 'HUF', 'RUB', 'TRY', 'ZAR', 'BRL', 'MXN', 'INR', 'KRW', 'SGD', 'HKD', 'TWD', 'THB', 'MYR', 'IDR', 'PHP', 'VND')):
-                        symbol = symbol + 'USDT'
-                    # Convert USDC pairs to USDT (Bybit doesn't have USDC perps)
-                    elif symbol.endswith('USDC'):
-                        symbol = symbol.replace('USDC', 'USDT')
+                    # Only USDT allowed - normalize to USDT
+                    if not symbol.endswith(('USDT','USDT.P')):
+                        symbol = f"{symbol}USDT"
+                    elif symbol.endswith('USDT.P'):
+                        symbol = symbol.replace('USDT.P', 'USDT')  # normalize to Bybit perp
                 
                 if self._is_valid_usdt_symbol(symbol):
                     return symbol
@@ -398,7 +390,19 @@ class StrictSignalParser:
         """Extract entry prices (up to 2)."""
         entries = []
         
-        # Handle GOLD format first: 🌟GOLD Buy 3865-3867
+        # Handle ENTRY1/ENTRY2 format first (highest priority)
+        entry1_match = re.search(r'ENTRY1[:\s]*(\d+\.?\d*)', message, re.IGNORECASE)
+        entry2_match = re.search(r'ENTRY2[:\s]*(\d+\.?\d*)', message, re.IGNORECASE)
+        if entry1_match:
+            try:
+                entries.append(to_decimal(entry1_match.group(1)))
+                if entry2_match:
+                    entries.append(to_decimal(entry2_match.group(1)))
+                return entries
+            except (ValueError, TypeError):
+                pass
+        
+        # Handle GOLD format: 🌟GOLD Buy 3865-3867
         gold_match = re.search(r'🌟GOLD\s+(?:Buy|Sell|Long|Short)\s+(\d+\.?\d*)(?:-(\d+\.?\d*))?', message, re.IGNORECASE)
         if gold_match:
             try:
@@ -484,6 +488,9 @@ class StrictSignalParser:
             elif re.search(r'\d+\)\s*(\d+\.?\d*)', line):  # Handle numbered format like "1) 0.108786"
                 # Keep numbered TP entries
                 filtered_message.append(line)
+            elif re.search(r'🎯\s*TP:', line, re.IGNORECASE):  # Handle "🎯 TP:" format
+                # Keep TP header lines
+                filtered_message.append(line)
             else:
                 filtered_message.append(line)
         
@@ -547,6 +554,32 @@ class StrictSignalParser:
         smart_crypto_tps = re.findall(r'🎯\s*TP[1-3]:\s*(\d+\.?\d*)', message, re.IGNORECASE)
         if smart_crypto_tps:
             for tp_str in smart_crypto_tps:
+                try:
+                    tp = to_decimal(tp_str)
+                    if Decimal("0.001") <= tp <= Decimal("1000000"):
+                        tps.append(tp)
+                except (ValueError, TypeError):
+                    continue
+            if tps:
+                return sorted(tps)[:4]
+        
+        # Handle numbered format with prices: 1) 12.95, 2) 13.08, etc. (MUST BE FIRST)
+        numbered_price_tps = re.findall(r'\d+\)\s*(\d+\.?\d*)', message)
+        if numbered_price_tps:
+            for tp_str in numbered_price_tps:
+                try:
+                    tp = to_decimal(tp_str)
+                    if Decimal("0.001") <= tp <= Decimal("1000000"):
+                        tps.append(tp)
+                except (ValueError, TypeError):
+                    continue
+            if tps:
+                return sorted(tps)[:4]
+        
+        # Handle simple numbered format: 1) 12.95, 2) 13.08, etc. (MUST BE AFTER PRICE FORMAT)
+        simple_numbered_tps = re.findall(r'(\d+\.?\d*)\s*\)', message)
+        if simple_numbered_tps:
+            for tp_str in simple_numbered_tps:
                 try:
                     tp = to_decimal(tp_str)
                     if Decimal("0.001") <= tp <= Decimal("1000000"):
@@ -739,9 +772,36 @@ class StrictSignalParser:
         """Validate trading symbol format."""
         if len(symbol) < 6 or len(symbol) > 20:  # Increased max length to 20 for longer symbols
             return False
-        # Accept symbols ending with common currency suffixes
-        valid_suffixes = ['USDT', 'USDC', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'BTC', 'ETH', 'USD', 'NZD', 'DKK', 'SEK', 'NOK', 'PLN', 'CZK', 'HUF', 'RUB', 'TRY', 'ZAR', 'BRL', 'MXN', 'INR', 'KRW', 'SGD', 'HKD', 'TWD', 'THB', 'MYR', 'IDR', 'PHP', 'VND']
-        return any(symbol.endswith(suffix) for suffix in valid_suffixes) and len(symbol) >= 6
+        # Only accept USDT symbols
+        return symbol.endswith('USDT') and len(symbol) >= 6
+    
+    def _validate_signal_data(self, symbol: str, direction: str, entries: List[str], 
+                            tps: List[str], sl: str, leverage: Decimal, mode: str) -> bool:
+        """Validate all signal data components."""
+        try:
+            # Validate symbol
+            if not symbol or not self._is_valid_usdt_symbol(symbol):
+                return False
+            
+            # Validate direction
+            if direction not in ['BUY', 'SELL', 'LONG', 'SHORT']:
+                return False
+            
+            # Validate entries
+            if not entries or len(entries) == 0:
+                return False
+            
+            # Validate leverage
+            if leverage <= 0 or leverage > 50:
+                return False
+            
+            # Validate mode
+            if mode not in ['SWING', 'FAST', 'DYNAMIC']:
+                return False
+            
+            return True
+        except Exception:
+            return False
 
 # Global parser instance
 _parser_instance = None

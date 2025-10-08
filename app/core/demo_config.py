@@ -1,5 +1,6 @@
 """Demo environment specific configuration and workarounds."""
 
+import os
 from decimal import Decimal
 from typing import Dict, Any
 from app.config.settings import BYBIT_ENDPOINT
@@ -10,7 +11,10 @@ class DemoConfig:
     @staticmethod
     def is_demo_environment() -> bool:
         """Check if we're running in demo environment."""
-        return "demo" in BYBIT_ENDPOINT.lower()
+        env = os.getenv("TRADING_ENV", "").lower()
+        endpoint = BYBIT_ENDPOINT.lower()
+        # Accept either an explicit env flag or known hostnames
+        return env in {"demo", "testnet"} or ("demo" in endpoint or "testnet" in endpoint)
     
     @staticmethod
     def get_demo_limits() -> Dict[str, Any]:

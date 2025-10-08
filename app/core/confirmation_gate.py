@@ -5,6 +5,23 @@ from typing import Dict, Any, Optional, Callable, Awaitable, List
 from decimal import Decimal
 from app.core.logging import system_logger, trade_logger
 from app.core.strict_config import STRICT_CONFIG
+from app.core.intelligent_tpsl_fixed import set_intelligent_tpsl_fixed
+
+async def retry_until_ok(op, *, attempts=5, delay=1.0, op_name=""):
+    """Retry operation until it succeeds or max attempts reached."""
+    last = None
+    for i in range(1, attempts + 1):
+        try:
+            res = await op()
+            # Accept either internal shape {success: True} or Bybit {retCode: 0}
+            if isinstance(res, dict) and (res.get("success") is True or res.get("retCode") == 0):
+                return res
+            last = res
+        except Exception as e:
+            last = {"success": False, "error": str(e)}
+        if i < attempts:
+            await asyncio.sleep(delay)
+    raise RuntimeError(f"{op_name or 'operation'} failed after {attempts} attempts: {last}")
 
 class ConfirmationGate:
     """Gate that ensures no Telegram messages until Bybit confirms operations."""
@@ -236,6 +253,8 @@ class ConfirmationGate:
             client = get_bybit_client()
             try:
                 order_results = []
+                tp_success = True
+                sl_success = True
                 
                 # Handle default TP/SL by calculating based on entry price
                 processed_tps = []
@@ -288,61 +307,99 @@ class ConfirmationGate:
                     else:
                         processed_sl = Decimal(str(sl))
                 
-                # Apply TP via trading-stop (first TP only; multi-TP would require partial close logic)
-                if processed_tps:
-                    try:
-                        tp_price = processed_tps[0]
-                        system_logger.info(f"Setting TP via trading-stop: {symbol} TP={tp_price}")
+                # Use intelligent TP/SL handler that adapts to environment
+                try:
+                    # Convert TP prices to percentages for intelligent handler
+                    tp_percentages = []
+                    if processed_tps:
+                        # Get current price to calculate percentages
+                        ticker_response = await client.get_ticker(symbol)
+                        if ticker_response and 'result' in ticker_response and 'list' in ticker_response['result']:
+                            current_price = Decimal(str(ticker_response['result']['list'][0]['lastPrice']))
+                            
+                            for tp_price in processed_tps:
+                                # Check if TP is already a percentage (small values < 1 are likely percentages)
+                                if tp_price < Decimal("1"):
+                                    # Treat as percentage directly (e.g., 0.02 = 2%)
+                                    tp_pct = tp_price * 100  # Convert to percentage
+                                else:
+                                    # Treat as absolute price and convert to percentage
+                                    if side == "LONG":
+                                        tp_pct = ((tp_price - current_price) / current_price) * 100
+                                    else:  # SHORT
+                                        tp_pct = ((current_price - tp_price) / current_price) * 100
+                                tp_percentages.append(tp_pct)
+                    
+                    # Convert SL price to percentage
+                    sl_percentage = None
+                    if processed_sl:
+                        # Check if SL is already a percentage (small values < 1 are likely percentages)
+                        if processed_sl < Decimal("1"):
+                            # Treat as percentage directly (e.g., 0.02 = 2%)
+                            sl_percentage = processed_sl * 100  # Convert to percentage
+                        else:
+                            # Treat as absolute price and convert to percentage
+                            if side == "LONG":
+                                sl_percentage = ((current_price - processed_sl) / current_price) * 100
+                            else:  # SHORT
+                                sl_percentage = ((processed_sl - current_price) / current_price) * 100
+                    
+                    # Use intelligent TP/SL handler with retry
+                    tpsl_result = await retry_until_ok(
+                        lambda: set_intelligent_tpsl_fixed(
+                            symbol=symbol,
+                            side=side,
+                            position_size=qty,
+                            entry_price=current_price,
+                            tp_levels=tp_percentages,
+                            sl_percentage=sl_percentage,
+                            trade_id=operation_id
+                        ),
+                        attempts=5, delay=1.0, op_name="set_intelligent_tpsl_fixed"
+                    )
+                    
+                    if tpsl_result['success']:
+                        system_logger.info(f"✅ Intelligent TP/SL placed successfully: {symbol}", {
+                            'method': tpsl_result['method'],
+                            'tp_levels': tpsl_result.get('tp_levels', []),
+                            'sl_percentage': tpsl_result.get('sl_percentage')
+                        })
+                        tp_success = True
+                        sl_success = True
+                        order_results.append({"intelligent_tpsl": tpsl_result})
+                    else:
+                        system_logger.error(f"❌ Intelligent TP/SL failed: {tpsl_result.get('error', 'Unknown error')}")
+                        tp_success = False
+                        sl_success = False
                         
-                        # Determine correct trigger direction for TP
-                        # For LONG positions: TP triggers on price rise (Rise)
-                        # For SHORT positions: TP triggers on price fall (Fall)
-                        tp_trigger_direction = "Rise" if side == "LONG" else "Fall"
-                        
-                        await client.set_trading_stop(
-                            STRICT_CONFIG.supported_categories[0],
-                            symbol,
-                            stop_loss=None,
-                            take_profit=tp_price,
-                            tp_order_type="Limit",
-                            tp_trigger_by=STRICT_CONFIG.exit_trigger_by,
-                            tp_trigger_direction=tp_trigger_direction,
-                        )
-                        order_results.append({"tpTradingStop": str(tp_price)})
-                    except Exception as e:
-                        system_logger.error(f"Failed to set TP via trading-stop: {e}")
+                except Exception as e:
+                    system_logger.error(f"❌ Failed to set intelligent TP/SL: {e}")
+                    if processed_tps:
+                        tp_success = False
+                    if processed_sl:
+                        sl_success = False
                 
-                # Apply SL via trading-stop
-                if processed_sl:
-                    try:
-                        system_logger.info(f"Setting SL via trading-stop: {symbol} SL={processed_sl}")
-                        
-                        # Determine correct trigger direction for SL
-                        # For LONG positions: SL triggers on price fall (Fall)
-                        # For SHORT positions: SL triggers on price rise (Rise)
-                        sl_trigger_direction = "Fall" if side == "LONG" else "Rise"
-                        
-                        await client.set_trading_stop(
-                            STRICT_CONFIG.supported_categories[0],
-                            symbol,
-                            stop_loss=processed_sl,
-                            sl_order_type="Market",
-                            sl_trigger_by=STRICT_CONFIG.exit_trigger_by,
-                            sl_trigger_direction=sl_trigger_direction,
-                        )
-                        order_results.append({"slTradingStop": str(processed_sl)})
-                    except Exception as e:
-                        system_logger.error(f"Failed to set SL via trading-stop: {e}")
+                # Return success only if both TP and SL orders succeeded (or if only one was needed)
+                overall_success = True
+                if processed_tps and not tp_success:
+                    overall_success = False
+                    system_logger.error(f"❌ TP order failed for {symbol}")
+                if processed_sl and not sl_success:
+                    overall_success = False
+                    system_logger.error(f"❌ SL order failed for {symbol}")
                 
                 return {
-                    'retCode': 0,
+                    'retCode': 0 if overall_success else 1,
                     'operation': 'exit_orders',
                     'symbol': symbol,
                     'side': side,
                     'qty': str(qty),
                     'tps': [str(tp) for tp in tps],
                     'sl': str(sl),
-                    'order_results': order_results
+                    'order_results': order_results,
+                    'tp_success': tp_success,
+                    'sl_success': sl_success,
+                    'overall_success': overall_success
                 }
             finally:
                 await client.aclose()
@@ -499,17 +556,8 @@ class ConfirmationGate:
                         "orderLinkId": order_link_id
                     }
                 else:
-                    # Limit orders need price - adjust for PostOnly acceptance
-                    from app.core.demo_config import DemoConfig
-                    if DemoConfig.is_demo_environment():
-                        # Demo environment: Adjust price more aggressively
-                        if side == "Buy":
-                            adjusted_price = price * Decimal("0.99")  # Move below market
-                        else:
-                            adjusted_price = price * Decimal("1.01")  # Move above market
-                    else:
-                        # Live environment: Use original price
-                        adjusted_price = price
+                    # Limit orders need price - use PostOnly for maker orders
+                    adjusted_price = price  # Use exact price for PostOnly
                     
                     order_body = {
                         "category": STRICT_CONFIG.supported_categories[0],
@@ -546,15 +594,15 @@ class ConfirmationGate:
                     else:
                         system_logger.info(f"Limit order accepted: {symbol} {side} {qty} @ {adjusted_price}")
                     return result
-                elif "PostOnly" in str(result.get('retMsg', '')) and STRICT_CONFIG.entry_order_type == "Limit":
-                    # PostOnly rejected, adjust price and retry (only for Limit orders)
+                elif "PostOnly" in str(result.get('retMsg', '')) and STRICT_CONFIG.entry_time_in_force == "PostOnly":
+                    # PostOnly rejected - adjust price and retry
                     system_logger.warning(f"PostOnly rejected (attempt {attempt + 1}/{max_retries}): {result.get('retMsg')}")
                     if attempt < max_retries - 1:
-                        # Demo environment: Adjust price more aggressively
+                        # Adjust price for better PostOnly acceptance
                         if side == "Buy":
-                            price = price * Decimal("0.99")  # Move further below for demo
+                            price = price * Decimal("1.001")  # Move slightly above for maker order
                         else:
-                            price = price * Decimal("1.01")  # Move further above for demo
+                            price = price * Decimal("0.999")  # Move slightly below for maker order
                         continue
                 elif "Qty invalid" in str(result.get('retMsg', '')):
                     # Handle qty invalid error with demo-specific logic
@@ -688,15 +736,15 @@ class ConfirmationGate:
                     else:
                         system_logger.info(f"Limit order accepted: {symbol} {side} {qty} @ {adjusted_price}")
                     return result
-                elif "PostOnly" in str(result.get('retMsg', '')) and STRICT_CONFIG.entry_order_type == "Limit":
-                    # PostOnly rejected, adjust price and retry (only for Limit orders)
+                elif "PostOnly" in str(result.get('retMsg', '')) and STRICT_CONFIG.entry_time_in_force == "PostOnly":
+                    # PostOnly rejected - adjust price and retry
                     system_logger.warning(f"PostOnly rejected (attempt {attempt + 1}/{max_retries}): {result.get('retMsg')}")
                     if attempt < max_retries - 1:
-                        # Demo environment: Adjust price more aggressively
+                        # Adjust price for better PostOnly acceptance
                         if side == "Buy":
-                            price = price * Decimal("0.99")  # Move further below for demo
+                            price = price * Decimal("1.001")  # Move slightly above for maker order
                         else:
-                            price = price * Decimal("1.01")  # Move further above for demo
+                            price = price * Decimal("0.999")  # Move slightly below for maker order
                         continue
                 elif "Qty invalid" in str(result.get('retMsg', '')):
                     # Handle qty invalid error with demo-specific logic

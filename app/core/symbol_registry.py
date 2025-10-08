@@ -107,9 +107,8 @@ class SymbolRegistry:
             for instrument in instruments:
                 symbol = instrument.get("symbol", "")
                 status = instrument.get("status", "")
-                
-                # Accept all trading symbols, not just USDT
-                if status == "Trading":
+                # Only USDT linear perpetuals (e.g., BTCUSDT, ETHUSDT)
+                if status == "Trading" and symbol.endswith("USDT"):
                     symbols[symbol] = SymbolInfo(symbol, instrument)
             
             system_logger.info(f"Fetched {len(symbols)} trading symbols")

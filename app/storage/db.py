@@ -99,11 +99,15 @@ async def init_db():
             """
         CREATE TABLE IF NOT EXISTS trades (
             trade_id TEXT PRIMARY KEY,
-            symbol TEXT,
-            direction TEXT,
-            entry_price REAL,
-            size REAL,
-            state TEXT,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            size REAL NOT NULL,
+            avg_entry REAL,
+            position_size REAL,
+            leverage REAL,
+            channel_name TEXT,
+            state TEXT NOT NULL,
             realized_pnl REAL DEFAULT 0,
             closed_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

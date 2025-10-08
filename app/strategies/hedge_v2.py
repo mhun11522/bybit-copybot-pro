@@ -21,6 +21,8 @@ class HedgeStrategyV2:
         self.activated = False
         self.trigger_pct = Decimal("2.0")  # -2% trigger
         self.hedge_size: Optional[Decimal] = None
+        self.retry_count = 0
+        self.max_retries = 3  # Maximum retry attempts for hedge activation
     
     async def check_and_activate(self, current_price: Decimal, original_entry: Decimal) -> bool:
         """Check if hedge should be activated."""
@@ -61,10 +63,26 @@ class HedgeStrategyV2:
     async def _activate_hedge(self, current_price: Decimal, loss_pct: Decimal):
         """Activate hedge by opening reverse position."""
         try:
+            # Check if already activated to prevent infinite loops
+            if self.activated:
+                system_logger.info(f"Hedge already activated for {self.symbol} - skipping")
+                return
+            
+            # Check retry limit
+            if self.retry_count >= self.max_retries:
+                system_logger.warning(f"Maximum retry attempts ({self.max_retries}) reached for hedge {self.symbol} - marking as activated")
+                self.activated = True
+                return
+            
+            # Increment retry counter
+            self.retry_count += 1
+            system_logger.info(f"Hedge activation attempt {self.retry_count}/{self.max_retries} for {self.symbol}")
+            
             # Get current position size
             pos = await self.bybit.get_position("linear", self.symbol)
             if not pos.get("result", {}).get("list"):
                 system_logger.error(f"No position found for {self.symbol}")
+                self.activated = True  # Mark as activated to prevent retries
                 return
             
             position = pos["result"]["list"][0]
@@ -72,7 +90,22 @@ class HedgeStrategyV2:
             
             if current_size <= 0:
                 system_logger.error(f"Invalid position size: {current_size}")
+                self.activated = True  # Mark as activated to prevent retries
                 return
+            
+            # Check account balance before placing order
+            try:
+                balance = await self.bybit.get_wallet_balance("UNIFIED")
+                if balance and balance.get('retCode') == 0:
+                    total_balance = Decimal(str(balance.get('result', {}).get('totalWalletBalance', '0')))
+                    if total_balance < Decimal("10"):  # Minimum 10 USDT required
+                        system_logger.warning(f"Insufficient balance for hedge: {total_balance} USDT")
+                        self.activated = True  # Mark as activated to prevent retries
+                        return
+                else:
+                    system_logger.warning(f"Could not check balance, proceeding with hedge attempt")
+            except Exception as e:
+                system_logger.warning(f"Balance check failed: {e}, proceeding with hedge attempt")
             
             # Calculate hedge size (100% of current position)
             self.hedge_size = current_size
@@ -109,10 +142,24 @@ class HedgeStrategyV2:
                 await send_message(message)
                 
             else:
-                system_logger.error(f"Failed to activate hedge: {result}")
+                # Handle specific error codes
+                error_code = result.get('retCode')
+                error_msg = result.get('retMsg', '')
+                
+                if error_code == 110007:  # "ab not enough for new order"
+                    system_logger.warning(f"Insufficient balance for hedge order: {error_msg}")
+                    self.activated = True  # Mark as activated to prevent infinite retries
+                elif error_code == 10001:  # Parameter error
+                    system_logger.error(f"Hedge order parameter error: {error_msg}")
+                    self.activated = True  # Mark as activated to prevent retries
+                else:
+                    system_logger.error(f"Failed to activate hedge (attempt {self.retry_count}/{self.max_retries}): {result}")
+                    # Don't mark as activated for other errors, allow retry up to max_retries
                 
         except Exception as e:
-            system_logger.error(f"Hedge activation error: {e}", exc_info=True)
+            system_logger.error(f"Hedge activation error (attempt {self.retry_count}/{self.max_retries}): {e}", exc_info=True)
+            # Mark as activated to prevent infinite retries on exceptions
+            self.activated = True
     
     async def close_hedge(self):
         """Close the hedge position."""

@@ -10,8 +10,10 @@ def _extract_retcode(exc: Exception):
     s = str(exc)
     for tok in s.replace(",", " ").replace(":", " ").split():
         if tok.isdigit():
-            try: return int(tok)
-            except: pass
+            try: 
+                return int(tok)
+            except ValueError:
+                continue
     return None
 
 def safe_step(step_name: str):
@@ -44,7 +46,10 @@ def safe_step(step_name: str):
     return deco
 
 def breaker_reset():
+    """Reset circuit breaker state."""
     if _BREAKER["open"] and time.time() >= _BREAKER["until"]:
         _BREAKER["open"] = False
+        _BREAKER["fail_count"] = 0
+        print("✅ Circuit breaker reset - trading resumed")
     if _BREAKER["fail_count"] > 0:
         _BREAKER["fail_count"] -= 1

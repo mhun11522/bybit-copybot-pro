@@ -1,4 +1,4 @@
-"""Strict compliance main.py with all client requirements."""
+"""Unified entrypoint for Bybit Copybot Pro - STRICT COMPLIANCE MODE."""
 
 import asyncio
 import sys
@@ -6,9 +6,33 @@ import os
 import signal
 import warnings
 from decimal import Decimal
+
+# Windows-specific asyncio fixes
+if sys.platform == "win32":
+    # Fix Windows asyncio event loop policy
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    # Suppress Windows asyncio cleanup warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning, module="asyncio")
+    # Fix Windows asyncio cleanup issues
+    import atexit
+    def cleanup_asyncio():
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.stop()
+        except:
+            pass
+    atexit.register(cleanup_asyncio)
+
+# CRITICAL: Environment variables must be set in .env file or system environment
+# Do not hardcode secrets in code for security reasons
 from app.core.decimal_config import ensure_decimal_precision
 from app.core.strict_config import STRICT_CONFIG
 from app.core.logging import system_logger
+from app.config.settings import (
+    BYBIT_ENDPOINT, TIMEZONE, RISK_PER_TRADE, BASE_IM, 
+    MAX_CONCURRENT_TRADES, ALWAYS_WHITELIST_CHANNELS
+)
 from app.telegram.strict_client import start_strict_telegram
 from app.reports.strict_scheduler import start_strict_report_scheduler
 from app.reports.cleanup import cleanup_scheduler
@@ -17,10 +41,10 @@ from app.bybit.client import BybitClient
 from app.trade.manager import get_position_manager
 from app.core.symbol_registry import get_symbol_registry
 from app.core.idempotency import get_idempotency_manager
+# from app.core.intelligent_tpsl import initialize_intelligent_tpsl  # OLD VERSION - REMOVED
 
 # Fix Windows console encoding for emojis
 if sys.platform.startswith("win"):
-    # Force UTF-8 encoding for stdout
     import codecs
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
@@ -33,17 +57,25 @@ if sys.platform.startswith("win"):
 
 # Windows asyncio configuration for Python 3.10+
 if sys.platform.startswith("win"):
-    # Use ProactorEventLoop for better performance and subprocess support
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    
-    # Suppress asyncio warnings that are common on Windows
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="asyncio")
+
+async def _print_config_snapshot():
+    """Print configuration snapshot with redacted secrets."""
+    from app.config.settings import BYBIT_ENDPOINT, BYBIT_API_KEY, BYBIT_API_SECRET
     
-    # Configure asyncio for better Windows performance
-    if hasattr(asyncio, 'WindowsProactorEventLoopPolicy'):
-        # Ensure we're using the most recent policy
-        policy = asyncio.WindowsProactorEventLoopPolicy()
-        asyncio.set_event_loop_policy(policy)
+    # Redact API secrets
+    redacted_key = f"{BYBIT_API_KEY[:8]}...{BYBIT_API_KEY[-4:]}" if BYBIT_API_KEY else "NOT_SET"
+    redacted_secret = f"{BYBIT_API_SECRET[:8]}...{BYBIT_API_SECRET[-4:]}" if BYBIT_API_SECRET else "NOT_SET"
+    
+    print("🔧 Configuration Snapshot:")
+    print(f"   Endpoint: {BYBIT_ENDPOINT}")
+    print(f"   API Key: {redacted_key}")
+    print(f"   API Secret: {redacted_secret}")
+    print(f"   Timezone: {STRICT_CONFIG.timezone}")
+    print(f"   Risk per trade: {STRICT_CONFIG.risk_pct * 100}%")
+    print(f"   Base IM: {STRICT_CONFIG.im_target} USDT")
+    print(f"   Max concurrent trades: {STRICT_CONFIG.max_trades}")
 
 async def _validate_api(client: BybitClient):
     """Fail-fast API validation with strict config."""
@@ -51,10 +83,10 @@ async def _validate_api(client: BybitClient):
         r = await client.wallet_balance("USDT")
         equity = r["result"]["list"][0].get("totalEquity")
         system_logger.info("API key validated", {'equity': equity})
-        print(f"[OK] API key validated. Equity: {equity} USDT")
+        print(f"✅ API key validated. Equity: {equity} USDT")
     except Exception as e:
         system_logger.error("API validation failed", {'error': str(e)})
-        print("[ERROR] API key/endpoint invalid or timestamp drift. Fix .env / system clock.")
+        print("❌ API key/endpoint invalid or timestamp drift. Fix .env / system clock.")
         print(f"   Error: {e}")
         raise
 
@@ -74,6 +106,16 @@ async def _initialize_strict_components():
         idempotency_manager = get_idempotency_manager()
         system_logger.info("Idempotency manager initialized")
         
+        # Initialize intelligent TP/SL handler
+        from app.core.intelligent_tpsl_fixed import initialize_intelligent_tpsl_fixed
+        await initialize_intelligent_tpsl_fixed()
+        system_logger.info("Intelligent TP/SL handler initialized")
+        
+        # Start simulated TP/SL manager (for testnet fallback)
+        from app.core.simulated_tpsl import start_simulated_tpsl
+        await start_simulated_tpsl()
+        system_logger.info("Simulated TP/SL manager started")
+        
         # Log configuration
         system_logger.info("Strict configuration loaded", {
             'risk_pct': str(STRICT_CONFIG.risk_pct),
@@ -85,7 +127,7 @@ async def _initialize_strict_components():
             'min_dynamic_leverage': str(STRICT_CONFIG.min_dynamic_leverage)
         })
         
-        print("[OK] Strict compliance components initialized")
+        print("✅ Strict compliance components initialized")
         
     except Exception as e:
         system_logger.error(f"Failed to initialize strict components: {e}", exc_info=True)
@@ -116,7 +158,7 @@ async def _validate_strict_requirements():
             raise ValueError(f"Invalid timezone: {e}")
         
         system_logger.info("All strict requirements validated")
-        print("[OK] All strict requirements validated")
+        print("✅ All strict requirements validated")
         
     except Exception as e:
         system_logger.error(f"Strict requirements validation failed: {e}", exc_info=True)
@@ -124,28 +166,18 @@ async def _validate_strict_requirements():
 
 async def main():
     """Main function with strict compliance."""
-    print("🚀 Starting Bybit Copybot Pro - STRICT COMPLIANCE MODE")
+    print("🚀 Bybit Copybot Pro - STRICT COMPLIANCE MODE")
     print(f"Python {sys.version}")
     print(f"Platform: {sys.platform}")
-    print(f"Risk per trade: {STRICT_CONFIG.risk_pct * 100}%")
-    print(f"IM target: {STRICT_CONFIG.im_target} USDT")
-    print(f"Max trades: {STRICT_CONFIG.max_trades}")
-    print(f"Timezone: {STRICT_CONFIG.timezone}")
+    
+    # Print configuration snapshot
+    await _print_config_snapshot()
     
     # Configure asyncio for better performance
     if sys.platform.startswith("win"):
-        # Set debug mode for development (remove in production)
-        # asyncio.get_event_loop().set_debug(True)
-        pass
+        pass  # Already configured above
     
     try:
-        # CRITICAL: Set environment variables BEFORE any imports
-        import os
-        os.environ["BYBIT_ENDPOINT"] = "https://api-demo.bybit.com"
-        os.environ["BYBIT_API_KEY"] = "Oh5e4BWjjTLIr5Lq2l"
-        os.environ["BYBIT_API_SECRET"] = "AxiPhPnxkhMxFKpA1XuIs1jukOoAp5GfzkrK"
-        print(f"🔧 Environment configured: {os.environ['BYBIT_ENDPOINT']}")
-        
         # Initialize strict components
         await _initialize_strict_components()
         
@@ -161,70 +193,84 @@ async def main():
         
         # Start strict report scheduler (exact client timing)
         await start_strict_report_scheduler()
-        print("[OK] Strict report scheduledo tarted (Daily 08:00, Weekly Sat 22:00)")
+        print("✅ Strict report scheduler started (Daily 08:00, Weekly Sat 22:00)")
         
         # Start 6-day cleanup scheduler for unfilled orders
         asyncio.create_task(cleanup_scheduler())
-        print("[OK] 6-day cleanup scheduler started.")
+        print("✅ 6-day cleanup scheduler started")
         
         # Resume open trades: reattach OCO, trailing, hedge monitors
         try:
             await resume_open_trades()
-            print("[OK] Open trades resumed.")
+            print("✅ Open trades resumed")
         except Exception as e:
             system_logger.warning(f"Resume error: {e}")
-            print(f"[WARN] Resume error: {e}")
+            print(f"⚠️ Resume error: {e}")
         
         # Start position manager
         position_manager = await get_position_manager()
         asyncio.create_task(position_manager.start_cleanup_scheduler())
-        print("[OK] Position manager started.")
+        print("✅ Position manager started")
         
         # Start Bybit WebSocket for real-time updates (if available)
         try:
             from app.bybit.websocket import get_websocket
             ws = await get_websocket()
-            print("[OK] Bybit WebSocket started for real-time updates")
+            print("✅ Bybit WebSocket started for real-time updates")
         except Exception as e:
-            print(f"[WARN] WebSocket not available: {e}")
-            print("[INFO] Bot will use REST API polling for updates")
+            print(f"⚠️ WebSocket not available: {e}")
+            print("ℹ️ Bot will use REST API polling for updates")
         
         # Start advanced report scheduler
         try:
             from app.reports.scheduler_v2 import get_report_scheduler
             report_scheduler = await get_report_scheduler()
             await report_scheduler.start()
-            print("[OK] Advanced report scheduler started (Daily 08:00, Weekly Sat 22:00 Stockholm)")
+            print("✅ Advanced report scheduler started (Daily 08:00, Weekly Sat 22:00 Stockholm)")
         except Exception as e:
-            print(f"[WARN] Report scheduler not available: {e}")
-            print("[INFO] Reports will not be automatically generated")
+            print(f"⚠️ Report scheduler not available: {e}")
+            print("ℹ️ Reports will not be automatically generated")
+        
+        # Emit "BOOT OK" message with trace_id
+        system_logger.info("BOOT OK", {
+            'endpoint': BYBIT_ENDPOINT,
+            'timezone': TIMEZONE,
+            'risk_pct': str(RISK_PER_TRADE),
+            'base_im': str(BASE_IM),
+            'max_trades': MAX_CONCURRENT_TRADES,
+            'whitelist_channels': ALWAYS_WHITELIST_CHANNELS
+        })
+        print("🚀 BOOT OK - All systems initialized")
         
         # Start strict Telegram client with all compliance features
-        print("[INFO] Starting strict Telegram client with ALL COMPLIANCE FEATURES...")
-        print("  ✅ Message sequencing: No Telegram until Bybit confirms")
-        print("  ✅ Order types: 100% Post-Only entries, 100% Reduce-Only exits")
-        print("  ✅ Leverage policy: SWING x6, FAST x10, DYNAMIC ≥7.5")
-        print("  ✅ Strategies: BE, Pyramid, Trailing, Hedge, Re-entry")
-        print("  ✅ Reports: Daily 08:00, Weekly Sat 22:00 Stockholm time")
-        print("  ✅ Max trades: 100 concurrent limit")
-        print("  ✅ Swedish templates: All messages in Swedish")
-        print("  ✅ Idempotency: 90-second sliding window")
-        print("  ✅ Symbol validation: USDT perps only with quantization")
-        print("  ✅ Decimal precision: 28-digit precision, no floats")
+        system_logger.info("Starting strict Telegram client with ALL COMPLIANCE FEATURES", {
+            'features': [
+                'Message sequencing: No Telegram until Bybit confirms',
+                'Order types: 100% Limit entries (PostOnly), 100% Reduce-Only exits',
+                'Leverage policy: SWING x6, FAST x10, DYNAMIC ≥7.5',
+                'Strategies: BE, Pyramid, Trailing, Hedge, Re-entry',
+                'Reports: Daily 08:00, Weekly Sat 22:00 Stockholm time',
+                'Max trades: 100 concurrent limit',
+                'Swedish templates: All messages in Swedish',
+                'Idempotency: 90-second sliding window',
+                'Symbol validation: USDT perps only with quantization',
+                'Decimal precision: 28-digit precision, no floats'
+            ]
+        })
         
         await start_strict_telegram()
         
     except KeyboardInterrupt:
         system_logger.info("Bot stopped by user")
-        print("\n[STOP] Bot stopped by user")
+        print("\n🛑 Bot stopped by user")
     except Exception as e:
         system_logger.error(f"Bot error: {e}", exc_info=True)
-        print(f"[ERROR] Bot error: {e}")
+        print(f"❌ Bot error: {e}")
         import traceback
         traceback.print_exc()
     finally:
         # Cleanup on exit
-        print("[INFO] Cleaning up...")
+        system_logger.info("Starting cleanup process")
         try:
             # Close HTTP client first
             await client.aclose()
@@ -233,12 +279,21 @@ async def main():
             from app.reports.strict_scheduler import stop_strict_report_scheduler
             await stop_strict_report_scheduler()
             
+            # Clean up resume tasks
+            from app.runtime.resume import cleanup_resume_tasks
+            await cleanup_resume_tasks()
+            
+            # Clean up memory resources
+            from app.core.memory_manager import cleanup_resources
+            cleanup_results = await cleanup_resources()
+            system_logger.info(f"Memory cleanup completed: {cleanup_results}")
+            
             # Stop WebSocket (if available)
             try:
                 from app.bybit.websocket import stop_websocket
                 await stop_websocket()
             except Exception as e:
-                print(f"[WARN] WebSocket cleanup error: {e}")
+                print(f"⚠️ WebSocket cleanup error: {e}")
             
             # Stop report scheduler (if available)
             try:
@@ -246,27 +301,34 @@ async def main():
                 report_scheduler = await get_report_scheduler()
                 await report_scheduler.stop()
             except Exception as e:
-                print(f"[WARN] Report scheduler cleanup error: {e}")
+                print(f"⚠️ Report scheduler cleanup error: {e}")
+            
+            # Stop simulated TP/SL manager
+            try:
+                from app.core.simulated_tpsl import stop_simulated_tpsl
+                await stop_simulated_tpsl()
+            except Exception as e:
+                print(f"⚠️ Simulated TP/SL cleanup error: {e}")
                 
             # Get all running tasks and cancel them properly
             current_task = asyncio.current_task()
             tasks = [task for task in asyncio.all_tasks() if not task.done() and task is not current_task]
             if tasks:
-                print(f"[INFO] Cancelling {len(tasks)} running tasks...")
+                system_logger.info(f"Cancelling {len(tasks)} running tasks")
                 for task in tasks:
                     task.cancel()
                 # Wait for tasks to complete with timeout to avoid hanging
                 await asyncio.wait(tasks, timeout=5.0, return_when=asyncio.ALL_COMPLETED)
         except Exception as e:
             system_logger.error(f"Cleanup error: {e}", exc_info=True)
-            print(f"[WARN] Cleanup error: {e}")
-        print("[OK] Cleanup completed")
+            print(f"⚠️ Cleanup error: {e}")
+        print("✅ Cleanup completed")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n[STOP] Bot stopped")
+        print("\n🛑 Bot stopped")
     except Exception as e:
-        print(f"[ERROR] Fatal error: {e}")
+        print(f"❌ Fatal error: {e}")
         sys.exit(1)
