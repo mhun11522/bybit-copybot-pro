@@ -270,7 +270,8 @@ class TradeFSM:
             # Initialize timeout counter if not exists
             if not hasattr(self, '_fill_check_count'):
                 self._fill_check_count = 0
-                self._max_fill_checks = 30  # 30 seconds timeout for Market orders
+                # PostOnly orders may take longer to fill (waiting for exact price)
+                self._max_fill_checks = 300  # 5 minutes timeout for PostOnly orders
             
             # Check for position
             position = await self._get_position()
@@ -368,6 +369,7 @@ class TradeFSM:
             position = await self._get_position()
             if not position or float(position.get('size', 0)) == 0:
                 # Position closed
+                system_logger.info(f"Position closed for {self.signal_data['symbol']}, transitioning to CLOSED")
                 await self._transition_to(TradeState.CLOSED)
                 return True
             
@@ -375,33 +377,56 @@ class TradeFSM:
             self.current_pnl = Decimal(str(position.get('unrealisedPnl', 0)))
             
             # Check for TP hits
-            if await self._check_tp_hit():
-                await self._transition_to(TradeState.TP_HIT)
-                return True
+            try:
+                if await self._check_tp_hit():
+                    system_logger.info(f"TP hit detected for {self.signal_data['symbol']}")
+                    await self._transition_to(TradeState.TP_HIT)
+                    return True
+            except Exception as e:
+                system_logger.warning(f"TP hit check failed for {self.signal_data['symbol']}: {e}")
             
             # Check for SL hits
-            if await self._check_sl_hit():
-                await self._transition_to(TradeState.SL_HIT)
-                return True
+            try:
+                if await self._check_sl_hit():
+                    system_logger.info(f"SL hit detected for {self.signal_data['symbol']}")
+                    await self._transition_to(TradeState.SL_HIT)
+                    return True
+            except Exception as e:
+                system_logger.warning(f"SL hit check failed for {self.signal_data['symbol']}: {e}")
             
-            # Check for hedge trigger
-            if await self._check_hedge_trigger():
-                await self._transition_to(TradeState.HEDGE_ACTIVE)
-                return True
+            # Check for hedge trigger (only if hedge strategy is active)
+            try:
+                if self.hedge_strategy:
+                    if await self._check_hedge_trigger():
+                        system_logger.info(f"Hedge trigger detected for {self.signal_data['symbol']}")
+                        await self._transition_to(TradeState.HEDGE_ACTIVE)
+                        return True
+            except Exception as e:
+                system_logger.warning(f"Hedge trigger check failed for {self.signal_data['symbol']}: {e}")
             
-            # Check for pyramid levels
-            await self._check_pyramid_levels()
+            # Check for pyramid levels (only if pyramid strategy is active)
+            try:
+                if self.pyramid_strategy:
+                    await self._check_pyramid_levels()
+            except Exception as e:
+                system_logger.warning(f"Pyramid levels check failed for {self.signal_data['symbol']}: {e}")
             
-            # Check for trailing stop
-            await self._check_trailing_stop()
+            # Check for trailing stop (only if trailing strategy is active)
+            try:
+                if self.trailing_strategy:
+                    await self._check_trailing_stop()
+            except Exception as e:
+                system_logger.warning(f"Trailing stop check failed for {self.signal_data['symbol']}: {e}")
             
             # Brief pause before next check
             await asyncio.sleep(1)
             return True
             
         except Exception as e:
-            system_logger.error(f"Running handler error: {e}", exc_info=True)
-            return False
+            system_logger.error(f"Running handler error for {self.signal_data['symbol']}: {e}", exc_info=True)
+            # Don't transition to ERROR, just log and continue
+            await asyncio.sleep(1)
+            return True
     
     async def _handle_tp_hit(self) -> bool:
         """Handle TP_HIT state - manage TP hits."""

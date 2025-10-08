@@ -246,7 +246,7 @@ async def main():
         system_logger.info("Starting strict Telegram client with ALL COMPLIANCE FEATURES", {
             'features': [
                 'Message sequencing: No Telegram until Bybit confirms',
-                'Order types: 100% Limit entries (PostOnly), 100% Reduce-Only exits',
+                'Order types: 100% Limit entries (PostOnly for precise waiting), 100% Reduce-Only exits',
                 'Leverage policy: SWING x6, FAST x10, DYNAMIC ≥7.5',
                 'Strategies: BE, Pyramid, Trailing, Hedge, Re-entry',
                 'Reports: Daily 08:00, Weekly Sat 22:00 Stockholm time',

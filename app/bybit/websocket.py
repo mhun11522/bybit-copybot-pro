@@ -63,7 +63,7 @@ class BybitWebSocket:
         
         return {
             "op": "auth",
-            "args": [BYBIT_API_KEY, expires, signature]  # EXACTLY 3 args!
+            "args": [BYBIT_API_KEY, str(expires), signature]  # EXACTLY 3 args! Ensure expires is string
         }
     
     async def connect(self):
@@ -88,15 +88,23 @@ class BybitWebSocket:
             await self.ws.send(json.dumps(auth_payload))
             print("🔐 Authentication sent, waiting for confirmation...")
             
-            # Wait for auth response
-            response = await self.ws.recv()
-            auth_response = json.loads(response)
-            
-            if auth_response.get("success"):
-                print("✅ Bybit WebSocket authenticated successfully")
-                return True
-            else:
-                print(f"❌ Bybit WebSocket authentication failed: {auth_response}")
+            # Wait for auth response with timeout
+            try:
+                response = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
+                auth_response = json.loads(response)
+                
+                if auth_response.get("success"):
+                    print("✅ Bybit WebSocket authenticated successfully")
+                    return True
+                else:
+                    print(f"❌ Bybit WebSocket authentication failed: {auth_response}")
+                    # Log more details for debugging
+                    print(f"🔍 Auth payload was: {auth_payload}")
+                    print(f"🔍 API Key length: {len(BYBIT_API_KEY)}")
+                    print(f"🔍 API Key starts with: {BYBIT_API_KEY[:8]}...")
+                    return False
+            except asyncio.TimeoutError:
+                print("❌ WebSocket authentication timeout")
                 return False
                 
         except Exception as e:

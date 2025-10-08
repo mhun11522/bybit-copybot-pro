@@ -141,12 +141,28 @@ class IntelligentTPSLHandlerFixed:
             # Use Conditional Orders for TP/SL (as per client specification)
             # TP/SL must be Conditional Orders placed after entry fills
             
+            # Get symbol info for proper quantity formatting
+            from app.core.symbol_registry import get_symbol_registry
+            registry = await get_symbol_registry()
+            symbol_info = await registry.get_symbol_info(symbol)
+            
             # Set multiple TP levels as separate Conditional Orders
             if tp_levels:
                 # Calculate position portion for each TP (equal distribution)
                 tp_portion = position_size / len(tp_levels)
-                # Round to nearest integer to meet Bybit qty requirements
-                tp_portion_rounded = tp_portion.quantize(Decimal('1'))
+                
+                # Format quantity using symbol info (proper precision, not integer rounding)
+                if symbol_info:
+                    tp_portion_formatted = symbol_info.format_qty(tp_portion)
+                else:
+                    # Fallback: use position size precision (NOT integer rounding)
+                    # Determine precision from position size
+                    position_str = str(position_size)
+                    if '.' in position_str:
+                        precision = len(position_str.split('.')[1])
+                        tp_portion_formatted = str(tp_portion.quantize(Decimal(10) ** -precision))
+                    else:
+                        tp_portion_formatted = str(tp_portion)
                 
                 for i, tp_percentage in enumerate(tp_levels):
                     try:
@@ -166,7 +182,7 @@ class IntelligentTPSLHandlerFixed:
                             "symbol": symbol,
                             "side": tp_order_side,
                             "orderType": "Market",  # Market order when triggered
-                            "qty": str(tp_portion_rounded),
+                            "qty": tp_portion_formatted,
                             "triggerPrice": str(actual_tp_price),
                             "triggerBy": "MarkPrice",  # Recommended for stability
                             "triggerDirection": trigger_direction,  # 1 for rise (≥), 2 for fall (≤)
@@ -206,13 +222,25 @@ class IntelligentTPSLHandlerFixed:
                         sl_order_side = "Buy"  # Close short position
                         sl_trigger_direction = 1  # Rise (≥) for short SL
                     
+                    # Format SL quantity using symbol info (proper precision)
+                    if symbol_info:
+                        sl_qty_formatted = symbol_info.format_qty(position_size)
+                    else:
+                        # Fallback: use position size precision (NOT integer rounding)
+                        position_str = str(position_size)
+                        if '.' in position_str:
+                            precision = len(position_str.split('.')[1])
+                            sl_qty_formatted = str(position_size.quantize(Decimal(10) ** -precision))
+                        else:
+                            sl_qty_formatted = str(position_size)
+                    
                     # Create Conditional SL order (StopOrder)
                     sl_order = {
                         "category": "linear",
                         "symbol": symbol,
                         "side": sl_order_side,
                         "orderType": "Market",  # Market order when triggered
-                        "qty": str(position_size.quantize(Decimal('1'))),  # Close entire position (rounded)
+                        "qty": sl_qty_formatted,  # Close entire position (properly formatted)
                         "triggerPrice": str(actual_sl_price),
                         "triggerBy": "MarkPrice",  # Recommended for stability
                         "triggerDirection": sl_trigger_direction,  # 2 for fall (≤), 1 for rise (≥)
@@ -238,8 +266,25 @@ class IntelligentTPSLHandlerFixed:
                 except Exception as e:
                     system_logger.error(f"Failed to place SL Conditional order: {e}")
             
+            # Calculate expected orders
+            expected_orders = len(tp_levels) if tp_levels else 0
+            if sl_percentage:
+                expected_orders += 1
+            
+            # Only report success if ALL expected orders were placed successfully
+            all_orders_successful = (successful_orders == expected_orders and expected_orders > 0)
+            
+            # Log the result
+            if all_orders_successful:
+                system_logger.info(f"✅ ALL TP/SL orders placed successfully: {successful_orders}/{expected_orders}")
+            else:
+                system_logger.error(f"❌ TP/SL orders failed: {successful_orders}/{expected_orders} successful")
+                for result in results:
+                    if result.get('result', {}).get('retCode') != 0:
+                        system_logger.error(f"❌ Failed order: {result.get('type')} - {result.get('result', {}).get('retMsg')}")
+            
             return {
-                'success': successful_orders > 0,
+                'success': all_orders_successful,
                 'method': 'native_api',
                 'trade_id': trade_id,
                 'tp_levels': [str(tp) for tp in tp_levels] if tp_levels else [],
@@ -247,7 +292,9 @@ class IntelligentTPSLHandlerFixed:
                 'position_size': str(position_size),
                 'entry_price': str(current_price),
                 'results': results,
-                'successful_orders': successful_orders
+                'successful_orders': successful_orders,
+                'expected_orders': expected_orders,
+                'all_orders_successful': all_orders_successful
             }
             
         except Exception as e:

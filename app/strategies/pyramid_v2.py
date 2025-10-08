@@ -18,16 +18,17 @@ class PyramidStrategyV2:
         self.channel_name = channel_name
         from app.bybit.client import get_bybit_client
         self.bybit = get_bybit_client()
-        # Pyramid levels calculated from ORIGINAL ENTRY as per client requirements
+        # Pyramid levels calculated from ORIGINAL ENTRY as per CLIENT SPECIFICATION
         # CRITICAL: All percentages calculated from ORIGINAL ENTRY, not current price
+        # DO NOT MODIFY THESE VALUES WITHOUT CLIENT APPROVAL
         self.levels = {
-            Decimal("1.5"): {"action": "check_im", "target_im": Decimal("20")},   # +1.5%: Check IM is 20 USDT if any TP hit
-            Decimal("2.3"): {"action": "sl_to_be"},                               # +2.3%: SL moved to breakeven + costs (0.0015%)
-            Decimal("2.4"): {"action": "max_leverage", "target_lev": Decimal("50")}, # +2.4%: Leverage raised to max 50x
-            Decimal("2.5"): {"action": "add_im", "target_im": Decimal("40")},     # +2.5%: IM increased to total 40 USDT
-            Decimal("4.0"): {"action": "add_im", "target_im": Decimal("60")},     # +4.0%: IM increased to total 60 USDT
-            Decimal("6.0"): {"action": "add_im", "target_im": Decimal("80")},     # +6.0%: IM increased to total 80 USDT
-            Decimal("8.6"): {"action": "add_im", "target_im": Decimal("100")},    # +8.6%: IM increased to total 100 USDT
+            Decimal("1.5"): {"action": "im_total", "target_im": Decimal("20")},   # Step 1: +1.5% → IM total 20 USDT
+            Decimal("2.3"): {"action": "sl_breakeven"},                           # Step 2: +2.3% → SL to breakeven
+            Decimal("2.4"): {"action": "set_full_leverage"},                      # Step 3: +2.4% → Full leverage (ETH=50x cap, others=instrument max)
+            Decimal("2.5"): {"action": "im_total", "target_im": Decimal("40")},   # Step 4: +2.5% → IM total 40 USDT
+            Decimal("4.0"): {"action": "im_total", "target_im": Decimal("60")},   # Step 5: +4.0% → IM total 60 USDT
+            Decimal("6.0"): {"action": "im_total", "target_im": Decimal("80")},   # Step 6: +6.0% → IM total 80 USDT
+            Decimal("8.1"): {"action": "im_total", "target_im": Decimal("100")},  # Step 7: +8.1% → IM total 100 USDT (FIXED from 8.6%)
         }
         self.activated_levels = set()
         self.max_adds = 7
@@ -57,23 +58,23 @@ class PyramidStrategyV2:
             
             success = False
             
-            if action == "check_im":
-                # +1.5%: Check that IM is 20 USDT if any TP has been hit
-                success = await self._check_im_20_if_tp_hit()
+            if action == "im_total":
+                # Steps 1, 4, 5, 6, 7: IM increased to target total
+                target_im = config.get("target_im", Decimal("20"))
+                success = await self._update_position_size_to_total_im(target_im)
                 
-            elif action == "sl_to_be":
-                # +2.3%: SL is moved to breakeven + costs
+            elif action == "sl_breakeven":
+                # Step 2: +2.3%: SL is moved to breakeven + costs
                 success = await self._move_sl_to_breakeven()
                 
-            elif action == "max_leverage":
-                # +2.4%: Leverage is raised to max (up to 50x) and position recalculated
-                target_lev = config.get("target_lev", Decimal("50"))
-                success = await self._update_leverage(target_lev)
+            elif action == "set_full_leverage":
+                # Step 3: +2.4%: Set full leverage (ETH=50x cap, others=instrument max)
+                success = await self._set_full_leverage()
                 
             elif action == "add_im":
-                # +2.5%, +4%, +6%, +8.6%: IM increased to target total
+                # Legacy action name - treat as im_total
                 target_im = config.get("target_im", Decimal("20"))
-                success = await self._update_position_size(target_im)
+                success = await self._update_position_size_to_total_im(target_im)
             
             if success:
                 system_logger.info(f"Pyramid level {level_num} activated for {self.symbol} at +{gain_pct:.2f}% - Action: {action}")
@@ -162,8 +163,55 @@ class PyramidStrategyV2:
         except Exception as e:
             system_logger.error(f"Breakeven SL move error: {e}", exc_info=True)
     
+    async def _set_full_leverage(self) -> bool:
+        """
+        Step 3: Set full leverage (CLIENT SPEC).
+        
+        RULES:
+        - ETH: Set to 50x (capped by instrument max if lower)
+        - Other symbols: Set to instrument max
+        """
+        try:
+            from app.core.leverage_policy import LeveragePolicy
+            
+            # Get instrument max leverage
+            instrument_max = await LeveragePolicy.get_instrument_max_leverage(self.symbol)
+            
+            # Determine target leverage
+            if "ETH" in self.symbol.upper():
+                # ETH: min(50, instrument_max)
+                target_leverage = min(Decimal("50"), instrument_max)
+                system_logger.info(f"ETH pyramid step 3: setting leverage to {target_leverage}x (cap=50x, instrument_max={instrument_max}x)")
+            else:
+                # Other symbols: use instrument max
+                target_leverage = instrument_max
+                system_logger.info(f"Pyramid step 3: setting leverage to instrument max {target_leverage}x for {self.symbol}")
+            
+            # Set leverage via Bybit API
+            result = await self.bybit.set_leverage(
+                category="linear",
+                symbol=self.symbol,
+                buy_leverage=str(target_leverage),
+                sell_leverage=str(target_leverage)
+            )
+            
+            # Check for success (retCode 0 or 110043 "leverage not modified")
+            if result.get('retCode') in [0, 110043]:
+                system_logger.info(f"Full leverage set to {target_leverage}x for {self.symbol}")
+                return True
+            else:
+                system_logger.error(f"Failed to set full leverage: {result}")
+                return False
+                
+        except Exception as e:
+            system_logger.error(f"Set full leverage error: {e}", exc_info=True)
+            return False
+    
     async def _update_leverage(self, new_leverage: Decimal) -> bool:
-        """Update leverage to maximum."""
+        """
+        Update leverage (legacy method, kept for compatibility).
+        Use _set_full_leverage() for Step 3 instead.
+        """
         try:
             result = await self.bybit.set_leverage(
                 category="linear",
@@ -172,7 +220,7 @@ class PyramidStrategyV2:
                 sell_leverage=str(new_leverage)
             )
             
-            if result.get('retCode') == 0:
+            if result.get('retCode') in [0, 110043]:  # 0=success, 110043=no change needed
                 system_logger.info(f"Leverage updated to {new_leverage}x for {self.symbol}")
                 return True
             else:
@@ -182,53 +230,75 @@ class PyramidStrategyV2:
             system_logger.error(f"Leverage update error: {e}", exc_info=True)
             return False
     
-    async def _update_position_size(self, new_im: Decimal) -> bool:
-        """Update position size to new IM target."""
+    async def _update_position_size_to_total_im(self, target_im_total: Decimal) -> bool:
+        """
+        Update position size to reach target TOTAL IM (CLIENT SPEC).
+        
+        IMPORTANT: target_im_total is the TOTAL IM desired, not the amount to add.
+        Calculate how much to add by: (target_total - current_im)
+        
+        Args:
+            target_im_total: Target total IM in USDT (e.g., 20, 40, 60, 80, 100)
+        
+        Returns:
+            True if successful or no action needed, False on error
+        """
         try:
             # Get current position
             pos = await self.bybit.positions("linear", self.symbol)
             if pos.get("result", {}).get("list"):
                 position = pos["result"]["list"][0]
                 current_size = Decimal(str(position.get("size", "0")))
+                current_im = Decimal(str(position.get("positionIM", "0")))  # Current IM
                 avg_price = Decimal(str(position.get("avgPrice", "0")))
                 leverage = Decimal(str(position.get("leverage", "1")))
                 
-                # Calculate new position size based on new IM
-                new_size = (new_im * leverage) / avg_price
-                size_difference = new_size - current_size
+                # Calculate IM to add
+                im_to_add = target_im_total - current_im
                 
-                if size_difference > 0:
-                    # Add to position
-                    # Convert direction to Bybit format for adding to position
-                    # For LONG positions: adding requires Buy orders
-                    # For SHORT positions: adding requires Sell orders
-                    bybit_side = "Buy" if self.direction == "LONG" else "Sell"
-                    
-                    order_body = {
-                        "category": "linear",
-                        "symbol": self.symbol,
-                        "side": bybit_side,  # Correct side for adding to position
-                        "orderType": "Market",
-                        "qty": str(size_difference),
-                        "timeInForce": "IOC",
-                        "reduceOnly": False,
-                        "positionIdx": 0,
-                        "orderLinkId": f"pyramid_{self.trade_id}_{len(self.activated_levels)}"
-                    }
-                    
-                    result = await self.bybit.place_order(order_body)
-                    if result.get('retCode') == 0:
-                        system_logger.info(f"Position size increased by {size_difference} for {self.symbol}")
-                        return True
-                    else:
-                        system_logger.error(f"Failed to increase position size: {result}")
-                        return False
+                if im_to_add <= 0:
+                    system_logger.info(f"IM already at or above target ({current_im} >= {target_im_total}), no action needed")
+                    return True  # Already at target
+                
+                # Calculate additional size needed
+                # Formula: additional_qty = (im_to_add * leverage) / price
+                additional_size = (im_to_add * leverage) / avg_price
+                
+                system_logger.info(f"Adding {im_to_add} USDT IM to {self.symbol} (current: {current_im}, target: {target_im_total})")
+                
+                # Add to position
+                bybit_side = "Buy" if self.direction == "LONG" else "Sell"
+                
+                order_body = {
+                    "category": "linear",
+                    "symbol": self.symbol,
+                    "side": bybit_side,
+                    "orderType": "Market",
+                    "qty": str(additional_size),
+                    "timeInForce": "IOC",
+                    "reduceOnly": False,
+                    "positionIdx": 0,
+                    "orderLinkId": f"pyramid_im_{self.trade_id}_{len(self.activated_levels)}"
+                }
+                
+                result = await self.bybit.place_order(order_body)
+                if result.get('retCode') == 0:
+                    system_logger.info(f"Position IM increased to {target_im_total} USDT for {self.symbol} (+{additional_size} contracts)")
+                    return True
                 else:
-                    return True  # No size change needed
+                    system_logger.error(f"Failed to increase position IM: {result}")
+                    return False
             return False
         except Exception as e:
-            system_logger.error(f"Position size update error: {e}", exc_info=True)
+            system_logger.error(f"Update position size to total IM error: {e}", exc_info=True)
             return False
+    
+    async def _update_position_size(self, new_im: Decimal) -> bool:
+        """
+        Update position size to new IM target (legacy method).
+        Use _update_position_size_to_total_im() for new code.
+        """
+        return await self._update_position_size_to_total_im(new_im)
     
     async def _add_im_to_position(self, im_to_add: Decimal):
         """Add specific IM amount to position."""

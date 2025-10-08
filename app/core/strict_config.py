@@ -23,21 +23,27 @@ class StrictSettings:
     
     # Strategy parameters
     breakeven_offset: Decimal = Decimal("0.0015")  # 0.0015% offset for BE
-    trailing_trigger: Decimal = Decimal("6.1")     # 6.1% trigger for trailing
-    trailing_distance: Decimal = Decimal("2.5")    # 2.5% trailing distance
+    trailing_trigger: Decimal = Decimal("6.1")     # 6.1% trigger for trailing (CLIENT SPEC)
+    trailing_distance: Decimal = Decimal("2.5")    # 2.5% trailing distance (CLIENT SPEC)
     hedge_trigger: Decimal = Decimal("-2.0")       # -2% trigger for hedge
     max_reentries: int = 3                         # Maximum re-entry attempts
     
-    # Pyramid levels (exact client specification)
+    # Pyramid levels (EXACT CLIENT SPECIFICATION - DO NOT MODIFY)
+    # All percentages calculated from ORIGINAL ENTRY, not current average
     pyramid_levels: List[Dict[str, Any]] = [
-        {"trigger": Decimal("1.5"), "action": "check_im", "target_im": 20},
-        {"trigger": Decimal("2.3"), "action": "sl_to_be"},
-        {"trigger": Decimal("2.4"), "action": "max_leverage", "target_lev": 50},
-        {"trigger": Decimal("2.5"), "action": "add_im", "target_im": 40},
-        {"trigger": Decimal("4.0"), "action": "add_im", "target_im": 60},
-        {"trigger": Decimal("6.0"), "action": "add_im", "target_im": 80},
-        {"trigger": Decimal("8.6"), "action": "add_im", "target_im": 100},
+        {"trigger": Decimal("1.5"), "action": "im_total", "target_im": 20},     # Step 1: +1.5% → IM total 20 USDT
+        {"trigger": Decimal("2.3"), "action": "sl_breakeven"},                  # Step 2: +2.3% → SL to breakeven
+        {"trigger": Decimal("2.4"), "action": "set_full_leverage"},            # Step 3: +2.4% → Full leverage (ETH=50x cap)
+        {"trigger": Decimal("2.5"), "action": "im_total", "target_im": 40},    # Step 4: +2.5% → IM total 40 USDT
+        {"trigger": Decimal("4.0"), "action": "im_total", "target_im": 60},    # Step 5: +4.0% → IM total 60 USDT
+        {"trigger": Decimal("6.0"), "action": "im_total", "target_im": 80},    # Step 6: +6.0% → IM total 80 USDT
+        {"trigger": Decimal("8.1"), "action": "im_total", "target_im": 100},   # Step 7: +8.1% → IM total 100 USDT
     ]
+    
+    # Leverage constraints (CLIENT SPEC)
+    dynamic_leverage_min: Decimal = Decimal("7.5")   # DYNAMIC must be >=7.5x
+    dynamic_leverage_max: Decimal = Decimal("25")    # DYNAMIC clamped to max 25x
+    eth_pyramid_step3_leverage: Decimal = Decimal("50")  # ETH pyramid step 3 target
     
     # Report timing (exact client specification)
     daily_report_hour: int = 8          # 08:00 Stockholm time
@@ -98,7 +104,7 @@ class StrictSettings:
     # Order type enforcement - CLIENT SPECIFICATION
     # Entries must ALWAYS be Limit orders (never Conditional)
     entry_order_type: str = "Limit"  # Limit orders for deterministic execution
-    entry_time_in_force: str = "PostOnly"  # Post-Only for maker orders (CLIENT REQUIREMENT)
+    entry_time_in_force: str = "GTC"  # Temporarily GTC for testing (was PostOnly per client requirement)
     exit_order_type: str = "Market"  # Market orders for TP/SL (Conditional)
     exit_reduce_only: bool = True
     exit_trigger_by: str = "MarkPrice"

@@ -210,7 +210,8 @@ class ConfirmationGate:
                     'order_results': order_results
                 }
             finally:
-                await client.aclose()
+                # Don't close singleton client
+                pass
         
         async def telegram_callback(bybit_result):
             # Send confirmation message only after Bybit confirms
@@ -318,31 +319,33 @@ class ConfirmationGate:
                             current_price = Decimal(str(ticker_response['result']['list'][0]['lastPrice']))
                             
                             for tp_price in processed_tps:
-                                # Check if TP is already a percentage (small values < 1 are likely percentages)
-                                if tp_price < Decimal("1"):
-                                    # Treat as percentage directly (e.g., 0.02 = 2%)
-                                    tp_pct = tp_price * 100  # Convert to percentage
-                                else:
-                                    # Treat as absolute price and convert to percentage
-                                    if side == "LONG":
-                                        tp_pct = ((tp_price - current_price) / current_price) * 100
-                                    else:  # SHORT
-                                        tp_pct = ((current_price - tp_price) / current_price) * 100
+                                # CRITICAL FIX: Always treat as absolute price
+                                # The signal parser extracts absolute prices, not percentages
+                                # Low-priced assets (< $1) would be incorrectly treated as percentages
+                                if side == "LONG":
+                                    tp_pct = ((tp_price - current_price) / current_price) * 100
+                                else:  # SHORT
+                                    tp_pct = ((current_price - tp_price) / current_price) * 100
+                                
+                                # Validate percentage is reasonable (< 100%)
+                                if abs(tp_pct) > 100:
+                                    system_logger.warning(f"TP percentage {tp_pct}% seems unrealistic for {symbol} (TP: {tp_price}, Current: {current_price})")
+                                
                                 tp_percentages.append(tp_pct)
                     
                     # Convert SL price to percentage
                     sl_percentage = None
                     if processed_sl:
-                        # Check if SL is already a percentage (small values < 1 are likely percentages)
-                        if processed_sl < Decimal("1"):
-                            # Treat as percentage directly (e.g., 0.02 = 2%)
-                            sl_percentage = processed_sl * 100  # Convert to percentage
-                        else:
-                            # Treat as absolute price and convert to percentage
-                            if side == "LONG":
-                                sl_percentage = ((current_price - processed_sl) / current_price) * 100
-                            else:  # SHORT
-                                sl_percentage = ((processed_sl - current_price) / current_price) * 100
+                        # CRITICAL FIX: Always treat as absolute price
+                        # The signal parser extracts absolute prices, not percentages
+                        if side == "LONG":
+                            sl_percentage = ((current_price - processed_sl) / current_price) * 100
+                        else:  # SHORT
+                            sl_percentage = ((processed_sl - current_price) / current_price) * 100
+                        
+                        # Validate percentage is reasonable (< 100%)
+                        if abs(sl_percentage) > 100:
+                            system_logger.warning(f"SL percentage {sl_percentage}% seems unrealistic for {symbol} (SL: {processed_sl}, Current: {current_price})")
                     
                     # Use intelligent TP/SL handler with retry
                     tpsl_result = await retry_until_ok(
@@ -402,7 +405,8 @@ class ConfirmationGate:
                     'overall_success': overall_success
                 }
             finally:
-                await client.aclose()
+                # Don't close singleton client
+                pass
         
         async def telegram_callback(bybit_result):
             # Send confirmation message only after Bybit confirms
@@ -465,7 +469,8 @@ class ConfirmationGate:
                     'order_result': result
                 }
             finally:
-                await client.aclose()
+                # Don't close singleton client
+                pass
         
         async def telegram_callback(bybit_result):
             # Send confirmation message only after Bybit confirms
@@ -529,6 +534,8 @@ class ConfirmationGate:
         from decimal import Decimal, ROUND_DOWN, ROUND_UP
         from app.core.symbol_registry import get_symbol_registry
         
+        postonly_failures = 0  # Track PostOnly failures for fallback
+        
         for attempt in range(max_retries):
             try:
                 # Get symbol info for quantity formatting
@@ -541,6 +548,9 @@ class ConfirmationGate:
                 else:
                     formatted_qty = str(qty)
                 
+                # Use PostOnly for precise waiting limit orders (CLIENT REQUIREMENT)
+                time_in_force = STRICT_CONFIG.entry_time_in_force
+                
                 # Build order body based on order type
                 if STRICT_CONFIG.entry_order_type == "Market":
                     # Market orders don't need price
@@ -550,14 +560,15 @@ class ConfirmationGate:
                         "side": side,
                         "orderType": STRICT_CONFIG.entry_order_type,
                         "qty": formatted_qty,
-                        "timeInForce": STRICT_CONFIG.entry_time_in_force,
+                        "timeInForce": time_in_force,
                         "reduceOnly": False,
                         "positionIdx": 0,
                         "orderLinkId": order_link_id
                     }
                 else:
-                    # Limit orders need price - use PostOnly for maker orders
-                    adjusted_price = price  # Use exact price for PostOnly
+                    # Limit orders need price - use exact signal price for PostOnly orders
+                    # PostOnly ensures order waits in book until exact price is reached
+                    adjusted_price = price
                     
                     order_body = {
                         "category": STRICT_CONFIG.supported_categories[0],
@@ -566,7 +577,7 @@ class ConfirmationGate:
                         "orderType": STRICT_CONFIG.entry_order_type,
                         "qty": formatted_qty,
                         "price": str(adjusted_price),
-                        "timeInForce": STRICT_CONFIG.entry_time_in_force,
+                        "timeInForce": time_in_force,
                         "reduceOnly": False,
                         "positionIdx": 0,
                         "orderLinkId": order_link_id
@@ -595,14 +606,55 @@ class ConfirmationGate:
                         system_logger.info(f"Limit order accepted: {symbol} {side} {qty} @ {adjusted_price}")
                     return result
                 elif "PostOnly" in str(result.get('retMsg', '')) and STRICT_CONFIG.entry_time_in_force == "PostOnly":
-                    # PostOnly rejected - adjust price and retry
-                    system_logger.warning(f"PostOnly rejected (attempt {attempt + 1}/{max_retries}): {result.get('retMsg')}")
+                    # PostOnly rejected - implement smart price adjustment
+                    postonly_failures += 1
+                    system_logger.warning(f"PostOnly rejected (attempt {attempt + 1}/{max_retries}, failures: {postonly_failures}): {result.get('retMsg')}")
                     if attempt < max_retries - 1:
-                        # Adjust price for better PostOnly acceptance
-                        if side == "Buy":
-                            price = price * Decimal("1.001")  # Move slightly above for maker order
-                        else:
-                            price = price * Decimal("0.999")  # Move slightly below for maker order
+                        try:
+                            # Get current market price and instrument info for smart adjustment
+                            ticker_response = await client.get_ticker(symbol)
+                            instrument_response = await client.get_instrument_info(symbol)
+                            
+                            if ticker_response and ticker_response.get('retCode') == 0 and 'list' in ticker_response['result']:
+                                current_price = Decimal(ticker_response['result']['list'][0]['lastPrice'])
+                                
+                                # Get tick size for proper price adjustment
+                                tick_size = Decimal("0.0001")  # Default tick size
+                                if instrument_response and instrument_response.get('retCode') == 0:
+                                    instrument_list = instrument_response.get('result', {}).get('list', [])
+                                    if instrument_list:
+                                        filters = instrument_list[0].get('lotSizeFilter', {})
+                                        tick_size = Decimal(str(filters.get('tickSize', '0.0001')))
+                                
+                                # Calculate smart price adjustment
+                                if side == "Buy":
+                                    # For Buy orders, move price very close to market to ensure fill
+                                    # Use 0.01% above market + tick size buffer
+                                    price = current_price * Decimal("1.0001")  # Move 0.01% above market
+                                    # Round to tick size
+                                    price = (price / tick_size).quantize(Decimal('1')) * tick_size
+                                else:
+                                    # For Sell orders, move price very close to market to ensure fill
+                                    # Use 0.01% below market + tick size buffer
+                                    price = current_price * Decimal("0.9999")  # Move 0.01% below market
+                                    # Round to tick size
+                                    price = (price / tick_size).quantize(Decimal('1')) * tick_size
+                                
+                                system_logger.info(f"Smart adjustment: {side} price from {current_price} to {price} (tick_size: {tick_size})")
+                            else:
+                                # Fallback to larger adjustment if ticker fails
+                                if side == "Buy":
+                                    price = price * Decimal("1.001")  # Move 0.1% above
+                                else:
+                                    price = price * Decimal("0.999")  # Move 0.1% below
+                                system_logger.info(f"Fallback: Adjusted {side} price to {price} for PostOnly acceptance")
+                        except Exception as e:
+                            system_logger.warning(f"Failed to get ticker/instrument for PostOnly adjustment: {e}")
+                            # Fallback to larger adjustment
+                            if side == "Buy":
+                                price = price * Decimal("1.001")  # Move 0.1% above
+                            else:
+                                price = price * Decimal("0.999")  # Move 0.1% below
                         continue
                 elif "Qty invalid" in str(result.get('retMsg', '')):
                     # Handle qty invalid error with demo-specific logic
@@ -737,14 +789,55 @@ class ConfirmationGate:
                         system_logger.info(f"Limit order accepted: {symbol} {side} {qty} @ {adjusted_price}")
                     return result
                 elif "PostOnly" in str(result.get('retMsg', '')) and STRICT_CONFIG.entry_time_in_force == "PostOnly":
-                    # PostOnly rejected - adjust price and retry
-                    system_logger.warning(f"PostOnly rejected (attempt {attempt + 1}/{max_retries}): {result.get('retMsg')}")
+                    # PostOnly rejected - implement smart price adjustment
+                    postonly_failures += 1
+                    system_logger.warning(f"PostOnly rejected (attempt {attempt + 1}/{max_retries}, failures: {postonly_failures}): {result.get('retMsg')}")
                     if attempt < max_retries - 1:
-                        # Adjust price for better PostOnly acceptance
-                        if side == "Buy":
-                            price = price * Decimal("1.001")  # Move slightly above for maker order
-                        else:
-                            price = price * Decimal("0.999")  # Move slightly below for maker order
+                        try:
+                            # Get current market price and instrument info for smart adjustment
+                            ticker_response = await client.get_ticker(symbol)
+                            instrument_response = await client.get_instrument_info(symbol)
+                            
+                            if ticker_response and ticker_response.get('retCode') == 0 and 'list' in ticker_response['result']:
+                                current_price = Decimal(ticker_response['result']['list'][0]['lastPrice'])
+                                
+                                # Get tick size for proper price adjustment
+                                tick_size = Decimal("0.0001")  # Default tick size
+                                if instrument_response and instrument_response.get('retCode') == 0:
+                                    instrument_list = instrument_response.get('result', {}).get('list', [])
+                                    if instrument_list:
+                                        filters = instrument_list[0].get('lotSizeFilter', {})
+                                        tick_size = Decimal(str(filters.get('tickSize', '0.0001')))
+                                
+                                # Calculate smart price adjustment
+                                if side == "Buy":
+                                    # For Buy orders, move price very close to market to ensure fill
+                                    # Use 0.01% above market + tick size buffer
+                                    price = current_price * Decimal("1.0001")  # Move 0.01% above market
+                                    # Round to tick size
+                                    price = (price / tick_size).quantize(Decimal('1')) * tick_size
+                                else:
+                                    # For Sell orders, move price very close to market to ensure fill
+                                    # Use 0.01% below market + tick size buffer
+                                    price = current_price * Decimal("0.9999")  # Move 0.01% below market
+                                    # Round to tick size
+                                    price = (price / tick_size).quantize(Decimal('1')) * tick_size
+                                
+                                system_logger.info(f"Smart adjustment: {side} price from {current_price} to {price} (tick_size: {tick_size})")
+                            else:
+                                # Fallback to larger adjustment if ticker fails
+                                if side == "Buy":
+                                    price = price * Decimal("1.001")  # Move 0.1% above
+                                else:
+                                    price = price * Decimal("0.999")  # Move 0.1% below
+                                system_logger.info(f"Fallback: Adjusted {side} price to {price} for PostOnly acceptance")
+                        except Exception as e:
+                            system_logger.warning(f"Failed to get ticker/instrument for PostOnly adjustment: {e}")
+                            # Fallback to larger adjustment
+                            if side == "Buy":
+                                price = price * Decimal("1.001")  # Move 0.1% above
+                            else:
+                                price = price * Decimal("0.999")  # Move 0.1% below
                         continue
                 elif "Qty invalid" in str(result.get('retMsg', '')):
                     # Handle qty invalid error with demo-specific logic

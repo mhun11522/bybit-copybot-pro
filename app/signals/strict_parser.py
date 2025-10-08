@@ -45,6 +45,9 @@ class StrictSignalParser:
             r'💎\s*SELL\s*#([A-Z0-9]{2,10})/USDT',  # 💎 SELL #RSS3/USDT
             # Additional USDT patterns for mixed case
             r'\b([A-Za-z0-9]{2,10})/USDT\b',  # Mixed case USDT pairs
+            # Long/Short direction patterns
+            r'#([A-Z0-9]+)\s+LONG',  # #MUBARAK LONG
+            r'#([A-Z0-9]+)\s+SHORT',  # #MUBARAK SHORT
         ]
         
         # Direction patterns (comprehensive coverage)
@@ -277,7 +280,7 @@ class StrictSignalParser:
                 entries = ["MARKET", "MARKET"]
             
             # Extract TPs and SL
-            tps = self._extract_tps(message)
+            tps = self._extract_tps(message, symbol)
             sl = self._extract_sl(message)
             
             # Check if we have at least one TP or SL (required)
@@ -466,7 +469,28 @@ class StrictSignalParser:
         entries = sorted(list(set(entries)))
         return entries[:2]  # Max 2 entries
     
-    def _extract_tps(self, message: str) -> List[Decimal]:
+    def _is_realistic_tp_price(self, tp: Decimal, symbol: str) -> bool:
+        """
+        Validate if TP price is realistic for the symbol.
+        
+        Reject obviously wrong values:
+        - ETHUSDT: TP < $1000 is suspicious (current ~$3000)
+        - BTCUSDT: TP < $10000 is suspicious (current ~$120000)
+        - Other USDT: Use general rules
+        """
+        symbol_upper = symbol.upper()
+        
+        if "ETH" in symbol_upper:
+            # ETH is around $3000, TP should be reasonable
+            return tp >= Decimal("1000")  # Reject TPs below $1000 for ETH
+        elif "BTC" in symbol_upper:
+            # BTC is around $120000, TP should be reasonable  
+            return tp >= Decimal("10000")  # Reject TPs below $10000 for BTC
+        else:
+            # For other symbols, use general validation
+            return tp >= Decimal("1.0")  # Must be at least $1
+
+    def _extract_tps(self, message: str, symbol: str) -> List[Decimal]:
         """Extract take profit levels (up to 4) - REJECT INVALID TPs."""
         tps = []
         
@@ -569,7 +593,10 @@ class StrictSignalParser:
             for tp_str in numbered_price_tps:
                 try:
                     tp = to_decimal(tp_str)
-                    if Decimal("0.001") <= tp <= Decimal("1000000"):
+                    # CRITICAL FIX: Validate realistic price ranges
+                    # Reject values that look like percentages or labels
+                    if (Decimal("0.001") <= tp <= Decimal("1000000") and 
+                        self._is_realistic_tp_price(tp, symbol)):  # Symbol-specific validation
                         tps.append(tp)
                 except (ValueError, TypeError):
                     continue
@@ -598,14 +625,20 @@ class StrictSignalParser:
                     for tp_str in match:
                         try:
                             tp = to_decimal(tp_str)
-                            if Decimal("0.001") <= tp <= Decimal("1000000"):
+                            # CRITICAL FIX: Validate realistic price ranges
+                            # Reject values that look like percentages or labels
+                            if (Decimal("0.001") <= tp <= Decimal("1000000") and 
+                                self._is_realistic_tp_price(tp, symbol)):  # Symbol-specific validation
                                 tps.append(tp)
                         except (ValueError, TypeError):
                             continue
                 else:
                     try:
                         tp = to_decimal(match)
-                        if Decimal("0.001") <= tp <= Decimal("1000000"):
+                        # CRITICAL FIX: Validate realistic price ranges
+                        # Reject values that look like percentages or labels
+                        if (Decimal("0.001") <= tp <= Decimal("1000000") and 
+                            self._is_realistic_tp_price(tp, symbol)):  # Symbol-specific validation
                             tps.append(tp)
                     except (ValueError, TypeError):
                         continue
@@ -621,7 +654,10 @@ class StrictSignalParser:
         if gold_sl_match:
             try:
                 sl = to_decimal(gold_sl_match.group(1))
-                if Decimal("0.001") <= sl <= Decimal("1000000"):
+                # CRITICAL FIX: Validate realistic price ranges
+                # Reject values that look like percentages or labels
+                if (Decimal("0.001") <= sl <= Decimal("1000000") and 
+                    sl >= Decimal("1.0")):  # Must be at least $1 (reject small percentages)
                     return sl
             except (ValueError, TypeError):
                 pass
@@ -631,7 +667,10 @@ class StrictSignalParser:
             if matches:
                 try:
                     sl = to_decimal(matches[0])
-                    if Decimal("0.001") <= sl <= Decimal("1000000"):
+                    # CRITICAL FIX: Validate realistic price ranges
+                    # Reject values that look like percentages or labels
+                    if (Decimal("0.001") <= sl <= Decimal("1000000") and 
+                        sl >= Decimal("1.0")):  # Must be at least $1 (reject small percentages)
                         return sl
                 except (ValueError, TypeError):
                     continue

@@ -299,25 +299,56 @@ class SwedishTemplatesV2:
     
     @staticmethod
     def pyramid_activated(signal_data: Dict[str, Any]) -> str:
-        """Pyramid activated template."""
+        """
+        Pyramid activated template (CLIENT SPEC - clear, no confusing math).
+        
+        Shows:
+        - Step number and trigger threshold
+        - What action was taken
+        - Actual values (IM total, leverage) - NOT ratios or multipliers
+        """
         symbol = signal_data.get('symbol', '')
         channel_name = signal_data.get('channel_name', '')
         level = signal_data.get('level', 1)
         gain_pct = signal_data.get('gain_pct', '0')
-        new_im = signal_data.get('new_im', '20')
-        new_leverage = signal_data.get('new_leverage', 'x10')
+        action = signal_data.get('action', '')
+        target_im = signal_data.get('target_im', '20')
+        target_leverage = signal_data.get('target_leverage', '')
         
-        return f"""📈 PYRAMID NIVÅ {level} AKTIVERAD
+        # Map action to Swedish description
+        action_map = {
+            'im_total': f'IM total nu: {target_im} USDT',
+            'sl_breakeven': 'SL flyttad till breakeven',
+            'set_full_leverage': f'Hävstång höjd till {target_leverage}x (max)',
+            'add_im': f'IM total nu: {target_im} USDT'
+        }
+        
+        action_text = action_map.get(action, f'IM total: {target_im} USDT')
+        
+        # Special formatting for Step 3 (leverage change)
+        if action == 'set_full_leverage':
+            if 'ETH' in symbol.upper():
+                action_text = f'Hävstång höjd till 50x (ETH max)'
+            else:
+                action_text = f'Hävstång höjd till {target_leverage}x (full leverage)'
+        
+        return f"""📈 PYRAMID STEG {level} AKTIVERAD
 📢 Från kanal: {channel_name}
 📊 Symbol: {symbol}
 📈 Vinst: +{gain_pct}%
 
-💰 Ny IM: {new_im} USDT
-🎯 Ny hävstång: {new_leverage}"""
+✅ Åtgärd: {action_text}"""
     
     @staticmethod
     def trailing_stop_activated(signal_data: Dict[str, Any]) -> str:
-        """Trailing stop activated template."""
+        """
+        Trailing stop activated template (CLIENT SPEC).
+        
+        Clearly shows:
+        - Activation threshold: +6.1%
+        - Distance: 2.5% behind price
+        - No confusing math or multipliers
+        """
         symbol = signal_data.get('symbol', '')
         channel_name = signal_data.get('channel_name', '')
         gain_pct = signal_data.get('gain_pct', '0')
@@ -327,7 +358,9 @@ class SwedishTemplatesV2:
 📊 Symbol: {symbol}
 📈 Vinst: +{gain_pct}%
 
-⛔ SL följer priset (2.5% bakom)"""
+✅ Aktivering: +6.1% (CLIENT SPEC)
+📍 Avstånd: 2.5% bakom högsta/lägsta pris
+⛔ SL uppdateras automatiskt"""
     
     @staticmethod
     def hedge_activated(signal_data: Dict[str, Any]) -> str:

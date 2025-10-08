@@ -1,23 +1,49 @@
 """Strict leverage policy enforcement for client compliance."""
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Tuple, Optional
 from app.core.strict_config import STRICT_CONFIG
 from app.core.logging import system_logger
 
 class LeveragePolicy:
-    """Enforces strict leverage policy according to client requirements."""
+    """Enforces strict leverage policy according to CLIENT SPECIFICATION."""
+    
+    @staticmethod
+    async def get_instrument_max_leverage(symbol: str) -> Decimal:
+        """
+        Get maximum leverage allowed for a symbol from Bybit API.
+        
+        Returns:
+            Decimal: Maximum leverage for the instrument (e.g., 50, 25, 12.5)
+        """
+        try:
+            from app.bybit.client import get_bybit_client
+            client = get_bybit_client()
+            
+            instrument_info = await client.get_instrument_info(symbol)
+            if instrument_info and instrument_info.get('retCode') == 0:
+                instruments = instrument_info.get('result', {}).get('list', [])
+                if instruments:
+                    leverage_filter = instruments[0].get('leverageFilter', {})
+                    max_lev = Decimal(str(leverage_filter.get('maxLeverage', '50')))
+                    system_logger.info(f"Instrument max leverage for {symbol}: {max_lev}x")
+                    return max_lev
+        except Exception as e:
+            system_logger.warning(f"Failed to get max leverage for {symbol}: {e}")
+        
+        # Default fallback
+        return Decimal("50")
     
     @staticmethod
     def validate_leverage(leverage: Decimal, mode: str) -> bool:
         """
         Validate leverage against client policy.
         
-        Rules:
-        - SWING: exactly 6x
-        - FAST: exactly 10x  
-        - DYNAMIC: ≥7.5x, ≤50x
-        - Forbidden gap: 6-7.5x (exclusive)
+        EXACT RULES:
+        - SWING: exactly 6x (no variation)
+        - FAST: exactly 10x
+        - DYNAMIC: ≥7.5x, ≤25x
+        - Forbidden gap: (6, 7.5) exclusive - MUST NOT exist
         """
         leverage_float = float(leverage)
         
@@ -26,86 +52,123 @@ class LeveragePolicy:
         elif mode == "FAST":
             return leverage_float == 10.0
         elif mode == "DYNAMIC":
-            return 7.5 <= leverage_float <= 50.0
+            return 7.5 <= leverage_float <= 25.0
         else:
             return False
     
     @staticmethod
     def is_forbidden_gap(leverage: Decimal) -> bool:
-        """Check if leverage is in forbidden 6-7.5 range."""
+        """
+        Check if leverage is in forbidden (6, 7.5) range.
+        
+        CLIENT RULE: No leverage between 6 and 7.5 (exclusive) is allowed.
+        """
         leverage_float = float(leverage)
         return 6.0 < leverage_float < 7.5
     
     @staticmethod
     def classify_leverage(mode_hint: Optional[str], has_sl: bool, raw_leverage: Optional[Decimal]) -> Tuple[Decimal, str]:
         """
-        Classify leverage according to client rules.
+        Classify leverage according to CLIENT SPECIFICATION.
         
-        Rules:
-        - Missing SL → FAST x10
-        - SWING mode → x6
-        - FAST mode → x10
-        - DYNAMIC mode → ≥7.5x (use raw if provided, otherwise calculate)
-        - Default → DYNAMIC ≥7.5x
+        EXACT RULES (DO NOT MODIFY):
+        1. Missing SL → FAST x10
+        2. SWING mode → EXACTLY x6 (force, no computation)
+        3. FAST mode → EXACTLY x10
+        4. DYNAMIC mode → compute with bounds [7.5, 25], close forbidden gap
+        5. Default → DYNAMIC ≥7.5x
+        
+        Forbidden Gap Rule:
+        - If computed leverage lands in (6, 7.5) → promote to 7.5x
         """
         if not has_sl:
             # Missing SL → FAST x10
             system_logger.info("Missing SL detected, forcing FAST x10 leverage")
-            return STRICT_CONFIG.fast_leverage, "FAST"
+            return Decimal("10"), "FAST"
         
         if mode_hint == "SWING":
-            system_logger.info("SWING mode detected, using x6 leverage")
-            return STRICT_CONFIG.swing_leverage, "SWING"
+            # SWING mode → EXACTLY x6 (NO COMPUTATION, NO VARIATION)
+            system_logger.info("SWING mode: enforcing EXACTLY 6x leverage (client spec)")
+            return Decimal("6"), "SWING"
         
         if mode_hint == "FAST":
-            system_logger.info("FAST mode detected, using x10 leverage")
-            return STRICT_CONFIG.fast_leverage, "FAST"
+            # FAST mode → EXACTLY x10
+            system_logger.info("FAST mode: enforcing EXACTLY 10x leverage (client spec)")
+            return Decimal("10"), "FAST"
         
-        if mode_hint == "DYNAMIC":
-            # Calculate dynamic leverage
+        if mode_hint == "DYNAMIC" or not mode_hint:
+            # Calculate dynamic leverage with strict bounds
             leverage = LeveragePolicy._calculate_dynamic_leverage(raw_leverage)
-            system_logger.info(f"DYNAMIC mode detected, using {leverage}x leverage")
+            system_logger.info(f"DYNAMIC mode: using {leverage}x leverage (bounds: [7.5, 25])")
             return leverage, "DYNAMIC"
         
-        # Default to DYNAMIC with calculated leverage
+        # Fallback to DYNAMIC
         leverage = LeveragePolicy._calculate_dynamic_leverage(raw_leverage)
-        system_logger.info(f"Default mode, using DYNAMIC {leverage}x leverage")
+        system_logger.info(f"Unknown mode '{mode_hint}', defaulting to DYNAMIC {leverage}x leverage")
         return leverage, "DYNAMIC"
     
     @staticmethod
     def _calculate_dynamic_leverage(raw_leverage: Optional[Decimal]) -> Decimal:
-        """Calculate dynamic leverage based on position size and IM target."""
-        from decimal import ROUND_DOWN
+        """
+        Calculate dynamic leverage with CLIENT SPECIFICATION.
         
-        # If raw leverage provided, use it but ensure it's within bounds
+        RULES:
+        - MUST be >= 7.5x (DYN_MIN)
+        - MUST be <= 25x (DYN_MAX)
+        - Forbidden gap (6, 7.5) → promote to 7.5x
+        - If calculated value < 7.5 → force 7.5x
+        - If calculated value > 25 → cap at 25x
+        """
+        DYN_MIN = STRICT_CONFIG.dynamic_leverage_min  # 7.5
+        DYN_MAX = STRICT_CONFIG.dynamic_leverage_max  # 25
+        
+        # If raw leverage provided, validate and clamp it
         if raw_leverage:
-            leverage = max(raw_leverage, STRICT_CONFIG.min_dynamic_leverage)
-            leverage = min(leverage, Decimal("50"))  # Max leverage limit
+            leverage = raw_leverage
             
-            # Ensure not in forbidden gap
-            if LeveragePolicy.is_forbidden_gap(leverage):
-                system_logger.warning(f"Raw leverage {leverage} in forbidden gap, adjusting to minimum")
-                leverage = STRICT_CONFIG.min_dynamic_leverage
+            # Close forbidden gap: if in (6, 7.5) → promote to 7.5
+            if Decimal("6") < leverage < DYN_MIN:
+                system_logger.warning(
+                    f"Raw leverage {leverage}x in forbidden gap (6, 7.5), "
+                    f"promoting to {DYN_MIN}x (client spec)"
+                )
+                leverage = DYN_MIN
+            
+            # Enforce minimum: any value < 7.5 → force 7.5
+            if leverage < DYN_MIN:
+                system_logger.info(f"Raw leverage {leverage}x < {DYN_MIN}x, forcing to {DYN_MIN}x")
+                leverage = DYN_MIN
+            
+            # Enforce maximum: any value > 25 → cap at 25
+            if leverage > DYN_MAX:
+                system_logger.info(f"Raw leverage {leverage}x > {DYN_MAX}x, capping to {DYN_MAX}x")
+                leverage = DYN_MAX
             
             return leverage
         
-        # Calculate dynamic leverage based on IM target and position size
-        base_leverage = STRICT_CONFIG.min_dynamic_leverage
+        # No raw leverage provided - calculate based on IM target
+        base_leverage = DYN_MIN  # Start at 7.5x minimum
         
         # Use deterministic calculation based on IM target
-        # Higher IM targets can use higher leverage
         if hasattr(STRICT_CONFIG, 'im_target'):
             im_factor = min(STRICT_CONFIG.im_target / Decimal("20"), Decimal("2.5"))  # Max 2.5x factor
             dynamic_leverage = base_leverage * im_factor
         else:
             dynamic_leverage = base_leverage
         
-        # Round to 1 decimal place for realistic dynamic values
+        # Round to 1 decimal place
         dynamic_leverage = dynamic_leverage.quantize(Decimal('0.1'), rounding=ROUND_DOWN)
         
-        # Ensure it's within bounds
-        dynamic_leverage = max(dynamic_leverage, STRICT_CONFIG.min_dynamic_leverage)
-        dynamic_leverage = min(dynamic_leverage, Decimal("50"))
+        # Enforce minimum (7.5x)
+        dynamic_leverage = max(dynamic_leverage, DYN_MIN)
+        
+        # Enforce maximum (25x)
+        dynamic_leverage = min(dynamic_leverage, DYN_MAX)
+        
+        # Final forbidden gap check (should not happen, but safety)
+        if Decimal("6") < dynamic_leverage < DYN_MIN:
+            system_logger.warning(f"Calculated leverage {dynamic_leverage}x in forbidden gap, forcing to {DYN_MIN}x")
+            dynamic_leverage = DYN_MIN
         
         return dynamic_leverage
     
@@ -113,6 +176,8 @@ class LeveragePolicy:
     def enforce_isolated_margin_only(message: str) -> bool:
         """
         Check if message contains Cross margin and reject it.
+        
+        CLIENT REQUIREMENT: Only isolated margin is allowed.
         
         Returns:
             True if signal should be rejected (contains Cross margin)
