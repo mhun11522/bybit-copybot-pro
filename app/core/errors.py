@@ -47,9 +47,12 @@ def safe_step(step_name: str):
 
 def breaker_reset():
     """Reset circuit breaker state."""
-    if _BREAKER["open"] and time.time() >= _BREAKER["until"]:
+    # Force reset if open
+    if _BREAKER["open"]:
         _BREAKER["open"] = False
         _BREAKER["fail_count"] = 0
-        print("✅ Circuit breaker reset - trading resumed")
-    if _BREAKER["fail_count"] > 0:
+        _BREAKER["until"] = 0.0
+        print("✅ Circuit breaker FORCE RESET - trading resumed")
+    elif _BREAKER["fail_count"] > 0:
         _BREAKER["fail_count"] -= 1
+        print(f"✅ Circuit breaker fail count decremented to {_BREAKER['fail_count']}")

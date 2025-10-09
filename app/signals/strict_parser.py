@@ -476,6 +476,7 @@ class StrictSignalParser:
         Reject obviously wrong values:
         - ETHUSDT: TP < $1000 is suspicious (current ~$3000)
         - BTCUSDT: TP < $10000 is suspicious (current ~$120000)
+        - AAVEUSDT: TP < $10 is suspicious (current ~$80-100)
         - Other USDT: Use general rules
         """
         symbol_upper = symbol.upper()
@@ -486,6 +487,19 @@ class StrictSignalParser:
         elif "BTC" in symbol_upper:
             # BTC is around $120000, TP should be reasonable  
             return tp >= Decimal("10000")  # Reject TPs below $10000 for BTC
+        elif "AAVE" in symbol_upper:
+            # AAVE is around $80-100, TP should be reasonable
+            return tp >= Decimal("10")  # Reject TPs below $10 for AAVE
+        elif symbol_upper.endswith("USDT"):
+            # For low-price coins (< $1), reject TP prices that would create negative percentages
+            # A TP of "1", "2", "3", "4" for a $0.13 coin would be 7x-30x the entry price
+            # which is unrealistic. Require TP to be within 0.5x-2x of typical price range.
+            # Reject absolute values like 1, 2, 3, 4 that are likely labels, not prices
+            if tp <= Decimal("5"):
+                # For coins trading under $1, TP should be realistic relative to entry
+                # Reject simple integers that are likely TP labels (TP1, TP2, etc.)
+                return False
+            return tp >= Decimal("0.001")  # Minimum realistic crypto price
         else:
             # For other symbols, use general validation
             return tp >= Decimal("1.0")  # Must be at least $1

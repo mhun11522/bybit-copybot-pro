@@ -32,24 +32,20 @@ class SwedishTemplatesV2:
 ⏳ Väntar på Bybit bekräftelse..."""
         
         elif mode == "FAST":
-            return f"""📢 SIGNAL MOTTAGEN & KOPIERAD
+            return f"""⏳ Väntar på Bybit bekräftelse
 📢 Från kanal: {channel_name}
 📊 Symbol: {symbol}
 📈 Riktning: {direction}
 🎯 Strategi: FAST {leverage_str}
-💰 IM: ~20 USDT
-
-⏳ Väntar på Bybit bekräftelse..."""
+💰 IM: ~20 USDT"""
         
         else:  # DYNAMIC
-            return f"""📢 SIGNAL MOTTAGEN & KOPIERAD
+            return f"""⏳ Väntar på Bybit bekräftelse
 📢 Från kanal: {channel_name}
 📊 Symbol: {symbol}
 📈 Riktning: {direction}
 🎯 Strategi: DYNAMISK {leverage_str}
-💰 IM: ~20 USDT
-
-⏳ Väntar på Bybit bekräftelse..."""
+💰 IM: ~20 USDT"""
     
     @staticmethod
     def hedge_activated(signal_data: Dict[str, Any]) -> str:
@@ -190,21 +186,24 @@ class SwedishTemplatesV2:
         symbol = signal_data.get('symbol', '')
         direction = signal_data.get('direction', '')
         channel_name = signal_data.get('channel_name', '')
+        quantity = signal_data.get('quantity', '0')
         tps = signal_data.get('tps', [])
         sl = signal_data.get('sl', '0')
         
-        tp_text = ""
-        for i, tp in enumerate(tps[:4], 1):  # Max 4 TPs
-            tp_text += f"📍 TP{i}: {tp} MUST confirm from Bybit\n"
+        # Format TP levels
+        if tps:
+            tp_text = ", ".join([str(tp) for tp in tps[:4]])  # Max 4 TPs
+        else:
+            tp_text = "DEFAULT_TP"
         
-        return f"""🎯 TP/SL ORDERS PLACERADE
-📢 Från kanal: {channel_name}
+        return f"""✅ TP/SL bekräftad av Bybit
+
 📊 Symbol: {symbol}
 📈 Riktning: {direction}
-
-{tp_text}⛔ SL: {sl} MUST confirm from Bybit
-
-✅ Position aktiv - övervakning startad"""
+💰 Storlek: {quantity}
+🎯 TP: {tp_text}
+🛑 SL: {sl}
+📺 Källa: {channel_name}"""
     
     @staticmethod
     def take_profit_taken(signal_data: Dict[str, Any]) -> str:

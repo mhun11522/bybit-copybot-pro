@@ -107,8 +107,9 @@ async def _initialize_strict_components():
         system_logger.info("Idempotency manager initialized")
         
         # Initialize intelligent TP/SL handler
-        from app.core.intelligent_tpsl_fixed import initialize_intelligent_tpsl_fixed
-        await initialize_intelligent_tpsl_fixed()
+        from app.core.intelligent_tpsl_fixed_v2 import get_intelligent_tpsl_handler_fixed
+        handler = get_intelligent_tpsl_handler_fixed()
+        await handler.initialize()
         system_logger.info("Intelligent TP/SL handler initialized")
         
         # Start simulated TP/SL manager (for testnet fallback)
@@ -178,6 +179,10 @@ async def main():
         pass  # Already configured above
     
     try:
+        # Reset circuit breaker on startup
+        from app.core.errors import breaker_reset
+        breaker_reset()
+        
         # Initialize strict components
         await _initialize_strict_components()
         

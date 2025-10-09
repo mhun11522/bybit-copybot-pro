@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional, Callable, Awaitable, List
 from decimal import Decimal
 from app.core.logging import system_logger, trade_logger
 from app.core.strict_config import STRICT_CONFIG
-from app.core.intelligent_tpsl_fixed import set_intelligent_tpsl_fixed
+from app.core.intelligent_tpsl_fixed_v2 import set_intelligent_tpsl_fixed
 
 async def retry_until_ok(op, *, attempts=5, delay=1.0, op_name=""):
     """Retry operation until it succeeds or max attempts reached."""
@@ -327,9 +327,15 @@ class ConfirmationGate:
                                 else:  # SHORT
                                     tp_pct = ((current_price - tp_price) / current_price) * 100
                                 
+                                # CRITICAL: Reject negative or unrealistic TP percentages
+                                if tp_pct < 0:
+                                    system_logger.error(f"❌ Rejecting negative TP percentage {tp_pct}% for {symbol} (TP: {tp_price}, Current: {current_price})")
+                                    continue  # Skip this TP level
+                                
                                 # Validate percentage is reasonable (< 100%)
                                 if abs(tp_pct) > 100:
-                                    system_logger.warning(f"TP percentage {tp_pct}% seems unrealistic for {symbol} (TP: {tp_price}, Current: {current_price})")
+                                    system_logger.warning(f"⚠️ TP percentage {tp_pct}% seems unrealistic for {symbol} (TP: {tp_price}, Current: {current_price})")
+                                    continue  # Skip this TP level
                                 
                                 tp_percentages.append(tp_pct)
                     
@@ -356,7 +362,8 @@ class ConfirmationGate:
                             entry_price=current_price,
                             tp_levels=tp_percentages,
                             sl_percentage=sl_percentage,
-                            trade_id=operation_id
+                            trade_id=operation_id,
+                            callback=lambda x: None  # Dummy callback for compatibility
                         ),
                         attempts=5, delay=1.0, op_name="set_intelligent_tpsl_fixed"
                     )
@@ -410,18 +417,33 @@ class ConfirmationGate:
         
         async def telegram_callback(bybit_result):
             # Send confirmation message only after Bybit confirms
-            message = f"""
-🎯 **TP/SL placerad**
+            # Use the actual calculated TP/SL values from the operation result
+            actual_tps = []
+            actual_sl = "N/A"
+            
+            if bybit_result and 'order_results' in bybit_result:
+                for result in bybit_result['order_results']:
+                    if 'intelligent_tpsl' in result:
+                        tpsl_data = result['intelligent_tpsl']
+                        if 'tp_levels' in tpsl_data:
+                            actual_tps = tpsl_data['tp_levels']
+                        if 'sl_percentage' in tpsl_data:
+                            actual_sl = f"{tpsl_data['sl_percentage']}%"
+            
+            # Fallback to original values if no actual values found
+            if not actual_tps:
+                actual_tps = [str(tp) for tp in tps]
+            if actual_sl == "N/A":
+                actual_sl = str(sl)
+            
+            message = f"""✅ TP/SL bekräftad av Bybit
 
-📊 **Symbol:** {symbol}
-📈 **Riktning:** {side}
-💰 **Storlek:** {qty}
-🎯 **TP:** {', '.join([str(tp) for tp in tps])}
-🛑 **SL:** {sl}
-📺 **Källa:** {channel_name}
-
-✅ **TP/SL bekräftad** av Bybit
-            """.strip()
+📊 Symbol: {symbol}
+📈 Riktning: {side}
+💰 Storlek: {qty}
+🎯 TP: {', '.join(actual_tps)}
+🛑 SL: {actual_sl}
+📺 Källa: {channel_name}"""
             
             await send_message(message)
         
