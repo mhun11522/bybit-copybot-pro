@@ -46,9 +46,9 @@ class BybitWebSocket:
         
         Official format from: https://bybit-exchange.github.io/docs/v5/ws/connect#authentication
         """
-        # Generate expires timestamp in milliseconds (as integer)
-        # Use current time + 1 second for expiration
-        expires = int((time.time() + 1) * 1000)
+        # Generate expires timestamp in seconds (as integer) - CORRECTED
+        # Use current time + 5 seconds for expiration (more buffer)
+        expires = int(time.time() + 5)
         
         # Sign the payload: signature = HMAC_SHA256("GET/realtime{expires}", secret)
         # This is the OFFICIAL format from Bybit docs for private WebSocket

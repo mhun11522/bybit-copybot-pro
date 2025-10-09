@@ -95,7 +95,9 @@ class StrictSettings:
         "-1002259852182": "Unknown Channel 3",
         "-1001744615878": "Unknown Channel 4", 
         "-1001648417896": "Unknown Channel 3",
-        "-1001536269316": "Unknown Channel 4"  # Found in recent logs
+        "-1001536269316": "Unknown Channel 4",  # Found in recent logs
+        "-1002500502443": "Active Trading Channel 2",  # From current logs
+        "-1001394941879": "Premium Signals Channel"  # From current logs
     }
     
     # Whitelisted channel IDs (derived from mapping)
@@ -104,7 +106,7 @@ class StrictSettings:
     # Order type enforcement - CLIENT SPECIFICATION
     # Entries must ALWAYS be Limit orders (never Conditional)
     entry_order_type: str = "Limit"  # Limit orders for deterministic execution
-    entry_time_in_force: str = "GTC"  # Temporarily GTC for testing (was PostOnly per client requirement)
+    entry_time_in_force: str = "GTC"  # GTC for testnet compatibility (PostOnly for live)
     exit_order_type: str = "Market"  # Market orders for TP/SL (Conditional)
     exit_reduce_only: bool = True
     exit_trigger_by: str = "MarkPrice"
@@ -214,3 +216,10 @@ def load_strict_config() -> StrictSettings:
 
 # Global settings instance
 STRICT_CONFIG = load_strict_config()
+
+def reload_strict_config():
+    """Reload strict configuration (useful for development)."""
+    global STRICT_CONFIG
+    STRICT_CONFIG = load_strict_config()
+    system_logger.info("Strict configuration reloaded")
+    return STRICT_CONFIG

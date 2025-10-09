@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional, Callable, Awaitable, List
 from decimal import Decimal
 from app.core.logging import system_logger, trade_logger
 from app.core.strict_config import STRICT_CONFIG
-from app.core.intelligent_tpsl_fixed_v2 import set_intelligent_tpsl_fixed
+from app.core.intelligent_tpsl_fixed_v3 import set_intelligent_tpsl_fixed
 
 async def retry_until_ok(op, *, attempts=5, delay=1.0, op_name=""):
     """Retry operation until it succeeds or max attempts reached."""
@@ -319,21 +319,51 @@ class ConfirmationGate:
                             current_price = Decimal(str(ticker_response['result']['list'][0]['lastPrice']))
                             
                             for tp_price in processed_tps:
-                                # CRITICAL FIX: Always treat as absolute price
-                                # The signal parser extracts absolute prices, not percentages
-                                # Low-priced assets (< $1) would be incorrectly treated as percentages
-                                if side == "LONG":
-                                    tp_pct = ((tp_price - current_price) / current_price) * 100
-                                else:  # SHORT
-                                    tp_pct = ((current_price - tp_price) / current_price) * 100
+                                # CRITICAL FIX: Smart detection of percentage vs absolute price
+                                # For low-priced assets, small values are likely percentages
+                                tp_pct = None
                                 
-                                # CRITICAL: Reject negative or unrealistic TP percentages
-                                if tp_pct < 0:
+                                # Smart detection logic:
+                                if current_price < Decimal("1.0") and tp_price <= Decimal("10.0"):
+                                    # Low-priced asset (< $1) with small TP value (≤ $10) = likely percentage
+                                    tp_pct = tp_price  # Use as percentage directly
+                                    system_logger.info(f"Smart detection: TP {tp_price} treated as {tp_pct}% for low-priced asset {symbol} (current: {current_price})")
+                                elif tp_price > current_price * Decimal("2.0"):
+                                    # TP value is more than 2x current price = likely absolute price
+                                    if side == "LONG":
+                                        tp_pct = ((tp_price - current_price) / current_price) * 100
+                                    else:  # SHORT
+                                        tp_pct = ((current_price - tp_price) / current_price) * 100
+                                    system_logger.info(f"Smart detection: TP {tp_price} treated as absolute price = {tp_pct}% for {symbol}")
+                                else:
+                                    # Ambiguous case - try both interpretations and pick the reasonable one
+                                    # Try as percentage first
+                                    tp_pct_as_percentage = tp_price
+                                    # Try as absolute price
+                                    if side == "LONG":
+                                        tp_pct_as_absolute = ((tp_price - current_price) / current_price) * 100
+                                    else:  # SHORT
+                                        tp_pct_as_absolute = ((current_price - tp_price) / current_price) * 100
+                                    
+                                    # Choose the more reasonable interpretation (between 0.1% and 50%)
+                                    if 0.1 <= abs(tp_pct_as_percentage) <= 50:
+                                        tp_pct = tp_pct_as_percentage
+                                        system_logger.info(f"Smart detection: TP {tp_price} treated as percentage {tp_pct}% (more reasonable)")
+                                    elif 0.1 <= abs(tp_pct_as_absolute) <= 50:
+                                        tp_pct = tp_pct_as_absolute
+                                        system_logger.info(f"Smart detection: TP {tp_price} treated as absolute price = {tp_pct}% (more reasonable)")
+                                    else:
+                                        # Both interpretations are unreasonable, skip
+                                        system_logger.warning(f"⚠️ TP {tp_price} has unreasonable interpretations: {tp_pct_as_percentage}% or {tp_pct_as_absolute}% for {symbol}")
+                                        continue
+                                
+                                # Final validation: Reject negative or unrealistic TP percentages
+                                if tp_pct is None or tp_pct < 0:
                                     system_logger.error(f"❌ Rejecting negative TP percentage {tp_pct}% for {symbol} (TP: {tp_price}, Current: {current_price})")
                                     continue  # Skip this TP level
                                 
-                                # Validate percentage is reasonable (< 100%)
-                                if abs(tp_pct) > 100:
+                                # Validate percentage is reasonable (0.1% to 100%)
+                                if abs(tp_pct) < 0.1 or abs(tp_pct) > 100:
                                     system_logger.warning(f"⚠️ TP percentage {tp_pct}% seems unrealistic for {symbol} (TP: {tp_price}, Current: {current_price})")
                                     continue  # Skip this TP level
                                 
@@ -349,9 +379,13 @@ class ConfirmationGate:
                         else:  # SHORT
                             sl_percentage = ((processed_sl - current_price) / current_price) * 100
                         
-                        # Validate percentage is reasonable (< 100%)
-                        if abs(sl_percentage) > 100:
-                            system_logger.warning(f"SL percentage {sl_percentage}% seems unrealistic for {symbol} (SL: {processed_sl}, Current: {current_price})")
+                        # Log SL calculation for debugging
+                        system_logger.info(f"SL calculation for {symbol}: SL={processed_sl}, Current={current_price}, Side={side}, Percentage={sl_percentage}%")
+                        
+                        # Validate percentage is reasonable (1% to 50% for normal SL)
+                        if abs(sl_percentage) > 50:
+                            system_logger.warning(f"⚠️ SL percentage {sl_percentage}% seems high for {symbol} (SL: {processed_sl}, Current: {current_price})")
+                            # Don't reject, just warn - might be intentional for high-risk trades
                     
                     # Use intelligent TP/SL handler with retry
                     tpsl_result = await retry_until_ok(

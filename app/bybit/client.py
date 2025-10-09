@@ -462,16 +462,54 @@ class BybitClient:
 
     async def set_trading_stop(self, category, symbol, stop_loss: Any = None, take_profit: Any = None,
                                sl_order_type: str = "Market", sl_trigger_by: str = "MarkPrice",
-                               tp_order_type: str = "Market", tp_trigger_by: str = "MarkPrice"):
+                               tp_order_type: str = "Market", tp_trigger_by: str = "MarkPrice",
+                               position_idx: int = None):
         """
         Amend TP/SL using /v5/position/trading-stop (V5).
         Based on research findings, use correct parameter order and format.
         """
+        # Determine correct positionIdx based on position mode
+        if position_idx is None:
+            # CRITICAL FIX: In OneWay mode (mode 0), always use positionIdx 0
+            # In Hedge mode (mode 1), use positionIdx 1 for LONG, 2 for SHORT
+            position_idx = 0  # Default OneWay mode
+            
+            try:
+                # Check if account is in Hedge mode
+                account_info = await self.get_account_info()
+                if account_info and 'result' in account_info and 'list' in account_info['result']:
+                    account_list = account_info['result']['list']
+                    if account_list and len(account_list) > 0:
+                        account = account_list[0]
+                        position_mode = account.get('positionMode', '0')  # Default to OneWay
+                        
+                        if position_mode == '1':  # Hedge mode
+                            # In Hedge mode, determine positionIdx based on position side
+                            positions = await self.get_positions(category, symbol)
+                            if positions and 'result' in positions and 'list' in positions['result']:
+                                for pos in positions['result']['list']:
+                                    if pos.get('symbol') == symbol and float(pos.get('size', 0)) != 0:
+                                        position_size = float(pos.get('size', 0))
+                                        if position_size > 0:  # LONG position
+                                            position_idx = 1
+                                        else:  # SHORT position (negative size)
+                                            position_idx = 2
+                                        system_logger.info(f"Hedge mode: Auto-determined positionIdx {position_idx} for {symbol} {'LONG' if position_size > 0 else 'SHORT'} position")
+                                        break
+                        else:
+                            # OneWay mode - always use positionIdx 0
+                            system_logger.info(f"OneWay mode: Using positionIdx 0 for {symbol}")
+                            position_idx = 0
+                            
+            except Exception as e:
+                system_logger.warning(f"Could not determine position mode for {symbol}: {e}, defaulting to OneWay mode (positionIdx 0)")
+                position_idx = 0
+        
         # Build body with correct parameter order based on research
         body: Dict[str, Any] = {
             "category": category,
             "symbol": symbol,
-            "positionIdx": 0
+            "positionIdx": position_idx
         }
         
         # Set tpslMode first if we have TP/SL parameters (correct V5 field name)
@@ -607,6 +645,10 @@ class BybitClient:
         # Fallback to local time
         return int(time.time() * 1000)
 
+
+    async def get_account_info(self):
+        """Get account information including position mode."""
+        return await self._get_auth("/v5/account/info", {})
 
 # Global singleton instance getter
 _global_bybit_client = None

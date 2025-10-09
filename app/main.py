@@ -107,7 +107,7 @@ async def _initialize_strict_components():
         system_logger.info("Idempotency manager initialized")
         
         # Initialize intelligent TP/SL handler
-        from app.core.intelligent_tpsl_fixed_v2 import get_intelligent_tpsl_handler_fixed
+        from app.core.intelligent_tpsl_fixed_v3 import get_intelligent_tpsl_handler_fixed
         handler = get_intelligent_tpsl_handler_fixed()
         await handler.initialize()
         system_logger.info("Intelligent TP/SL handler initialized")
@@ -251,7 +251,7 @@ async def main():
         system_logger.info("Starting strict Telegram client with ALL COMPLIANCE FEATURES", {
             'features': [
                 'Message sequencing: No Telegram until Bybit confirms',
-                'Order types: 100% Limit entries (PostOnly for precise waiting), 100% Reduce-Only exits',
+                f'Order types: 100% Limit entries ({STRICT_CONFIG.entry_time_in_force} for precise waiting), 100% Reduce-Only exits',
                 'Leverage policy: SWING x6, FAST x10, DYNAMIC ≥7.5',
                 'Strategies: BE, Pyramid, Trailing, Hedge, Re-entry',
                 'Reports: Daily 08:00, Weekly Sat 22:00 Stockholm time',
