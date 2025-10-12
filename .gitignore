@@ -38,8 +38,12 @@ Thumbs.db
 
 # Project specific
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.session
 *.session-journal
+*.session-shm
+*.session-wal
 .env
 bot_database_export.xlsx
 bybit_orders_*.xlsx

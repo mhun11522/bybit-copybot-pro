@@ -865,9 +865,10 @@ class StrictSignalParser:
             leverage = self._calculate_dynamic_leverage(raw_leverage)
             return leverage, "DYNAMIC"
         
-        # Default to DYNAMIC with calculated leverage (not FAST)
-        leverage = self._calculate_dynamic_leverage(raw_leverage)
-        return leverage, "DYNAMIC"
+        # CLIENT FIX: Default to SWING x6.00 when no mode keyword detected
+        # Previously defaulted to DYNAMIC (7.5x), causing incorrect leverage
+        system_logger.info("No mode keyword detected, defaulting to SWING x6.00")
+        return STRICT_CONFIG.swing_leverage, "SWING"
     
     def _contains_cross_margin(self, message: str) -> bool:
         """Check if message contains Cross margin (to be rejected)."""

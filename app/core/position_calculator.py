@@ -106,20 +106,22 @@ class PositionCalculator:
             Tuple of (contract_qty, debug_info)
         """
         try:
-            # Step 1: Calculate IM (Initial Margin) based on risk
-            # IM = risk% * wallet_balance * channel_multiplier
-            base_im = wallet_balance * risk_pct * channel_risk_multiplier
+            # CLIENT FIX: Use fixed BASE_IM per trade, NOT percentage of wallet
+            # Bug was: base_im = wallet_balance * risk_pct (resulted in 150-200 USDT IM)
+            # Correct: Use fixed 20 USDT per trade as per client spec
+            from app.config.settings import BASE_IM
             
-            # Simplified position sizing based on client requirements
-            # Client specified: 20 USDT IM per trade, 2% risk, 401.2 USDT wallet
-            # Use exact client requirements without complex multipliers
-            im = base_im  # Use calculated IM directly
+            # Use fixed BASE_IM from configuration (default 20 USDT)
+            im = BASE_IM
+            
+            # Note: risk_pct, wallet_balance, and channel_risk_multiplier are NOT used
+            # for IM calculation. They are kept as parameters for backward compatibility
+            # but the client specification requires fixed IM per trade.
+            
+            # Ensure IM is within reasonable limits
             min_im = Decimal("20.0")  # Client requirement: 20 USDT minimum
-            im = max(im, min_im)
-            
-            # Ensure IM doesn't exceed reasonable limits
             max_im = Decimal("100.0")  # Client requirement: max 100 USDT per trade
-            im = min(im, max_im)
+            im = max(min(im, max_im), min_im)
             
             # Determine price tier for debugging
             if entry_price < Decimal("1.0"):
@@ -180,7 +182,7 @@ class PositionCalculator:
                 'wallet_balance': float(wallet_balance),
                 'risk_pct': float(risk_pct),
                 'channel_risk_multiplier': float(channel_risk_multiplier),
-                'base_im': float(base_im),
+                'base_im_used': float(BASE_IM),  # Fixed BASE_IM from config
                 'final_im': float(im),
                 'leverage': float(leverage),
                 'entry_price': float(entry_price),
