@@ -89,16 +89,29 @@ class BybitClient:
         if self._initialized:
             return
             
-        # Explicitly clear proxy environment variables to prevent httpx from using them
-        os.environ.pop('HTTP_PROXY', None)
-        os.environ.pop('HTTPS_PROXY', None)
-        os.environ.pop('http_proxy', None)
-        os.environ.pop('https_proxy', None)
+        # CRITICAL FIX: Completely disable proxy at multiple levels
+        # This fixes 403 Forbidden errors caused by system proxy settings
         
+        # 1. Clear ALL proxy environment variables
+        proxy_vars = [
+            'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+            'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'
+        ]
+        for var in proxy_vars:
+            os.environ.pop(var, None)
+        
+        # 2. Set NO_PROXY to disable proxy for all domains
+        os.environ['NO_PROXY'] = '*'
+        os.environ['no_proxy'] = '*'
+        
+        # 3. Create httpx client with explicit proxy bypass
+        import httpx
+        # Note: trust_env=False prevents reading proxy from environment
+        # Combined with NO_PROXY='*', this ensures no proxy is used
         self.http = httpx.AsyncClient(
             base_url=_get_bybit_endpoint(), 
-            timeout=20.0,
-            trust_env=False,  # Don't read proxy from environment
+            timeout=30.0,  # Increased timeout for slow connections
+            trust_env=False,  # CRITICAL: Don't read proxy from environment
             follow_redirects=True  # Follow 301/302 redirects
         )
         self._ts_offset_ms = 0
@@ -109,18 +122,21 @@ class BybitClient:
         # Mark as initialized
         self._initialized = True
         print(f"🔧 BybitClient singleton created with endpoint: {self.http.base_url}")
+        print("🔧 Proxy settings: DISABLED (trust_env=False, proxies={})")
     
     def ensure_http_client_open(self):
         """Ensure HTTP client is open and ready for requests."""
         if self.http.is_closed:
-            # Recreate HTTP client if it was closed
+            # Recreate HTTP client if it was closed (with same proxy-disabled settings)
+            import httpx
             self.http = httpx.AsyncClient(
                 base_url=_get_bybit_endpoint(), 
-                timeout=20.0,
-                trust_env=False,
+                timeout=30.0,
+                trust_env=False,  # CRITICAL: Don't read proxy from environment
                 follow_redirects=True
             )
             print(f"🔧 HTTP client recreated for endpoint: {self.http.base_url}")
+            print("🔧 Proxy settings: DISABLED (trust_env=False, proxies={})")
 
     async def _server_ms(self) -> int:
         """Get server time in milliseconds"""
@@ -399,13 +415,22 @@ class BybitClient:
             print(f"⚠️  Query open orders failed: {e}")
             return {"retCode":0, "retMsg":"OK", "result":{"list":[]}}
 
+    async def get_open_orders(self, category, symbol):
+        """Alias for query_open to maintain compatibility with existing code."""
+        return await self.query_open(category, symbol)
+
     async def positions(self, category, symbol):
         """
+        Get position list using GET method (correct Bybit V5 API).
+        This is the standard method - use this everywhere for consistency.
+        
         Robust: on HTTP 404, pretend 'no positions yet' instead of crashing the FSM.
         """
-        body = {"category":category,"symbol":symbol}
+        # CRITICAL FIX: Bybit V5 /v5/position/list is a GET endpoint, not POST!
+        # Using POST may cause API errors or inconsistent behavior
+        params = {"category": category, "symbol": symbol}
         try:
-            return await self._post_auth("/v5/position/list", body)
+            return await self._get_auth("/v5/position/list", params)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 # Return empty list if position doesn't exist yet

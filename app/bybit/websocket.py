@@ -195,8 +195,12 @@ class BybitWebSocket:
     
     async def _heartbeat_loop(self):
         """Send periodic pings to keep connection alive"""
-        while self.running and self.ws and not self.ws.closed:
+        while self.running and self.ws:
             try:
+                # Check if connection is closed (some websocket versions don't have .closed attribute)
+                if hasattr(self.ws, 'closed') and self.ws.closed:
+                    break
+                
                 await asyncio.sleep(self.ping_interval)
                 
                 # Send ping

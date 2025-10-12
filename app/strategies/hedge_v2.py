@@ -31,7 +31,7 @@ class HedgeStrategyV2:
         
         # First check if position still exists
         try:
-            pos = await self.bybit.get_position("linear", self.symbol)
+            pos = await self.bybit.positions("linear", self.symbol)
             if not pos.get("result", {}).get("list"):
                 system_logger.warning(f"No position found for {self.symbol} - hedge check skipped")
                 return False
@@ -66,24 +66,24 @@ class HedgeStrategyV2:
             # Check if already activated to prevent infinite loops
             if self.activated:
                 system_logger.info(f"Hedge already activated for {self.symbol} - skipping")
-                return
+                return False
             
             # Check retry limit
             if self.retry_count >= self.max_retries:
                 system_logger.warning(f"Maximum retry attempts ({self.max_retries}) reached for hedge {self.symbol} - marking as activated")
                 self.activated = True
-                return
+                return False
             
             # Increment retry counter
             self.retry_count += 1
             system_logger.info(f"Hedge activation attempt {self.retry_count}/{self.max_retries} for {self.symbol}")
             
             # Get current position size
-            pos = await self.bybit.get_position("linear", self.symbol)
+            pos = await self.bybit.positions("linear", self.symbol)
             if not pos.get("result", {}).get("list"):
                 system_logger.error(f"No position found for {self.symbol}")
                 self.activated = True  # Mark as activated to prevent retries
-                return
+                return False
             
             position = pos["result"]["list"][0]
             current_size = Decimal(str(position.get("size", "0")))
@@ -91,7 +91,7 @@ class HedgeStrategyV2:
             if current_size <= 0:
                 system_logger.error(f"Invalid position size: {current_size}")
                 self.activated = True  # Mark as activated to prevent retries
-                return
+                return False
             
             # Check account balance before placing order
             try:
@@ -101,7 +101,7 @@ class HedgeStrategyV2:
                     if total_balance < Decimal("10"):  # Minimum 10 USDT required
                         system_logger.warning(f"Insufficient balance for hedge: {total_balance} USDT")
                         self.activated = True  # Mark as activated to prevent retries
-                        return
+                        return False
                 else:
                     system_logger.warning(f"Could not check balance, proceeding with hedge attempt")
             except Exception as e:
@@ -165,12 +165,12 @@ class HedgeStrategyV2:
         """Close the hedge position."""
         try:
             if not self.hedge_size:
-                return
+                return False
             
             # Get current position
-            pos = await self.bybit.get_position("linear", self.symbol)
+            pos = await self.bybit.positions("linear", self.symbol)
             if not pos.get("result", {}).get("list"):
-                return
+                return False
             
             position = pos["result"]["list"][0]
             current_size = Decimal(str(position.get("size", "0")))

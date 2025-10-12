@@ -1,6 +1,7 @@
 """Strict compliance Telegram client with all client requirements."""
 
 from telethon import TelegramClient, events
+from telethon.sessions import SQLiteSession
 from app.core.strict_config import STRICT_CONFIG
 from app.signals.strict_parser import get_strict_parser
 from app.core.idempotency import is_duplicate_signal, mark_signal_processed
@@ -12,13 +13,26 @@ from app.telegram.swedish_templates_v2 import get_swedish_templates
 from app.telegram.output import send_message
 from datetime import datetime
 import asyncio
+import sqlite3
 
 class StrictTelegramClient:
     """Strict compliance Telegram client with exact client requirements."""
     
     def __init__(self):
+        # Create SQLite session with WAL mode to prevent database locking
+        session = SQLiteSession(STRICT_CONFIG.telegram_session)
+        
+        # Enable WAL mode for better concurrent access (fixes database locking)
+        try:
+            session._conn.execute('PRAGMA journal_mode=WAL')
+            session._conn.execute('PRAGMA busy_timeout=10000')  # 10 second timeout
+            session._conn.commit()
+            system_logger.info("Telegram session configured with WAL mode (prevents locking)")
+        except Exception as e:
+            system_logger.warning(f"Could not enable WAL mode: {e} (will use default)")
+        
         self.client = TelegramClient(
-            STRICT_CONFIG.telegram_session,
+            session,
             STRICT_CONFIG.telegram_api_id,
             STRICT_CONFIG.telegram_api_hash
         )

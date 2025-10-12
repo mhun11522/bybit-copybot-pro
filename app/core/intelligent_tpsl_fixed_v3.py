@@ -21,14 +21,23 @@ class IntelligentTPSLHandlerFixed:
         if not self.initialized:
             self._client = get_bybit_client()
             
-            # Force testnet environment and native TP/SL for testnet BEFORE analysis
-            if str(self._client.http.base_url) == "https://api-testnet.bybit.com":
+            # Force environment detection based on endpoint BEFORE analysis
+            endpoint_str = str(self._client.http.base_url)
+            if "api-demo.bybit.com" in endpoint_str:
+                self.environment_detector.environment = BybitEnvironment.DEMO
+                self.environment_detector.tpsl_strategy = TPSLStrategy.SIMULATED
+                system_logger.info(f"Forced demo environment and simulated TP/SL")
+            elif "api-testnet.bybit.com" in endpoint_str:
                 self.environment_detector.environment = BybitEnvironment.TESTNET
                 self.environment_detector.tpsl_strategy = TPSLStrategy.NATIVE_API
                 system_logger.info(f"Forced testnet environment and native TP/SL API")
+            elif "api.bybit.com" in endpoint_str:
+                self.environment_detector.environment = BybitEnvironment.LIVE
+                self.environment_detector.tpsl_strategy = TPSLStrategy.NATIVE_API
+                system_logger.info(f"Forced live environment and native TP/SL API")
             else:
-                # Only run analysis if not testnet
-                await self.environment_detector._analyze_environment_capabilities()
+                # Unknown endpoint - run analysis
+                await self.environment_detector.detect_environment()
             
             system_logger.info(f"Intelligent TP/SL handler initialized", data={
                 "environment": self.environment_detector.environment.value if self.environment_detector.environment else "Unknown",
@@ -97,6 +106,54 @@ class IntelligentTPSLHandlerFixed:
                 'entry_price': str(entry_price)
             }
 
+    def _calculate_tp_portions(self, num_tp_levels: int) -> List[Decimal]:
+        """
+        Calculate what portion of position to close at each TP level.
+        
+        CRITICAL FIX: Ensures TPs close portions, not entire position!
+        
+        Strategy: Equal distribution
+        - 1 TP: [1.0] = 100%
+        - 2 TPs: [0.5, 0.5] = 50% each
+        - 3 TPs: [0.33, 0.33, 0.34] = ~33% each
+        - 4 TPs: [0.25, 0.25, 0.25, 0.25] = 25% each
+        
+        Args:
+            num_tp_levels: Number of TP levels
+            
+        Returns:
+            List of Decimal portions that sum to 1.0
+        """
+        if num_tp_levels == 1:
+            return [Decimal("1.0")]
+        
+        if num_tp_levels == 2:
+            return [Decimal("0.5"), Decimal("0.5")]
+        
+        if num_tp_levels == 3:
+            return [Decimal("0.33"), Decimal("0.33"), Decimal("0.34")]
+        
+        if num_tp_levels == 4:
+            return [Decimal("0.25"), Decimal("0.25"), Decimal("0.25"), Decimal("0.25")]
+        
+        if num_tp_levels == 5:
+            return [Decimal("0.20"), Decimal("0.20"), Decimal("0.20"), Decimal("0.20"), Decimal("0.20")]
+        
+        if num_tp_levels == 6:
+            return [Decimal("0.167"), Decimal("0.167"), Decimal("0.166"), 
+                    Decimal("0.167"), Decimal("0.167"), Decimal("0.166")]
+        
+        # Fallback: equal distribution
+        base_portion = Decimal("1.0") / Decimal(str(num_tp_levels))
+        portions = [base_portion] * num_tp_levels
+        
+        # Ensure they sum to exactly 1.0
+        total = sum(portions)
+        if total != Decimal("1.0"):
+            portions[-1] += Decimal("1.0") - total
+        
+        return portions
+    
     async def _set_native_tpsl_attached(
         self,
         symbol: str,
@@ -169,97 +226,45 @@ class IntelligentTPSLHandlerFixed:
                 system_logger.warning(f"Could not determine position mode for {symbol}: {e}, defaulting to OneWay mode (positionIdx 0)")
                 position_idx = 0
             
-            # CORRECT APPROACH: Use set_trading_stop for primary TP/SL, then separate orders for additional TPs
-            # Bybit's set_trading_stop only supports ONE TP and ONE SL per position
+            # CRITICAL FIX: Calculate TP portions for partial position closes
+            # This ensures each TP closes only a portion, not the entire position
+            tp_portions = self._calculate_tp_portions(len(tp_levels)) if tp_levels else []
+            
+            system_logger.info(f"TP portions calculated for {len(tp_levels)} levels: {[str(p) for p in tp_portions]}")
+            
+            # APPROACH: Place ALL TPs as conditional orders (not using set_trading_stop for TP)
+            # Bybit's set_trading_stop doesn't support partial TP closes
+            # We'll use set_trading_stop ONLY for SL
             all_tp_results = []
             overall_success = True
             
-            # Set primary TP/SL using set_trading_stop (first TP level + SL)
-            if tp_levels and len(tp_levels) > 0:
-                primary_tp_percentage = tp_levels[0]
-                if side == "Buy":  # Long position
-                    primary_tp_price = current_price * (1 + primary_tp_percentage / 100)
-                else:  # Short position
-                    primary_tp_price = current_price * (1 - primary_tp_percentage / 100)
+            # Set ONLY SL using set_trading_stop (no TP here since it doesn't support partial closes)
+            if sl_price:
+                system_logger.info(f"Setting SL only: SL={sl_price}")
                 
-                system_logger.info(f"Setting primary TP/SL: TP={primary_tp_price} ({primary_tp_percentage}%), SL={sl_price}")
-                
-                # Check if TP/SL is already set to prevent "not modified" errors
-                try:
-                    positions = await self._client.get_positions("linear", symbol)
-                    if positions and 'result' in positions and 'list' in positions['result']:
-                        for pos in positions['result']['list']:
-                            if pos.get('symbol') == symbol and float(pos.get('size', 0)) != 0:
-                                existing_tp = pos.get('takeProfit')
-                                existing_sl = pos.get('stopLoss')
-                                
-                                # Check if TP/SL is already set with same values
-                                if existing_tp and existing_tp != '0' and existing_sl and existing_sl != '0':
-                                    # Compare values to see if they're the same (within tolerance)
-                                    existing_tp_decimal = Decimal(str(existing_tp))
-                                    existing_sl_decimal = Decimal(str(existing_sl))
-                                    
-                                    # Check if values are close enough (within 0.1% tolerance)
-                                    tp_diff = abs(existing_tp_decimal - primary_tp_price) / primary_tp_price * 100
-                                    sl_diff = abs(existing_sl_decimal - sl_price) / sl_price * 100 if sl_price else 0
-                                    
-                                    if tp_diff < 0.1 and sl_diff < 0.1:
-                                        system_logger.info(f"TP/SL already set with same values for {symbol}: TP={existing_tp}, SL={existing_sl}")
-                                        # Skip setting if already configured with same values
-                                        all_tp_results.append({
-                                            'tp_level': 1,
-                                            'tp_percentage': str(primary_tp_percentage),
-                                            'tp_price': str(primary_tp_price),
-                                            'success': True,
-                                            'result': {'retCode': 0, 'retMsg': 'Already set with same values'},
-                                            'method': 'set_trading_stop'
-                                        })
-                                        break
-                                    else:
-                                        system_logger.info(f"TP/SL values differ for {symbol}: existing TP={existing_tp} vs new TP={primary_tp_price}, existing SL={existing_sl} vs new SL={sl_price}")
-                except Exception as e:
-                    system_logger.warning(f"Could not check existing TP/SL: {e}")
-                
-                # Use set_trading_stop for primary TP/SL
+                # CRITICAL FIX: Use set_trading_stop for SL ONLY (not TP)
+                # Bybit's set_trading_stop doesn't support partial TP closes
                 result = await self._client.set_trading_stop(
                     category="linear",
                     symbol=symbol,
-                    take_profit=primary_tp_price,
-                    stop_loss=sl_price,
-                    tp_order_type="Market",
+                    stop_loss=sl_price,  # Only SL, no TP!
                     sl_order_type="Market",
-                    tp_trigger_by="MarkPrice",
                     sl_trigger_by="MarkPrice",
                     position_idx=position_idx
                 )
                 
-                system_logger.info(f"Primary TP/SL set_trading_stop response: {json.dumps(result, indent=2)}")
+                system_logger.info(f"SL set_trading_stop response: {json.dumps(result, indent=2)}")
                 
-                if result and result.get('retCode') == 0:
-                    system_logger.info(f"✅ Primary TP/SL attached to position successfully: TP={primary_tp_price}, SL={sl_price}")
-                    all_tp_results.append({
-                        'tp_level': 1,
-                        'tp_percentage': str(primary_tp_percentage),
-                        'tp_price': str(primary_tp_price),
-                        'success': True,
-                        'result': result,
-                        'method': 'set_trading_stop'
-                    })
-                else:
-                    error_msg = result.get('retMsg', 'Unknown error') if result else 'No response'
-                    system_logger.error(f"❌ Primary TP/SL failed: {error_msg}")
-                    all_tp_results.append({
-                        'tp_level': 1,
-                        'tp_percentage': str(primary_tp_percentage),
-                        'tp_price': str(primary_tp_price),
-                        'success': False,
-                        'error': error_msg,
-                        'method': 'set_trading_stop'
-                    })
+                if result and result.get('retCode') != 0:
+                    error_msg = result.get('retMsg', 'Unknown error')
+                    system_logger.error(f"❌ SL setting failed: {error_msg}")
                     overall_success = False
-                
-                # Create additional TP orders for remaining levels (separate conditional orders)
-                for i, tp_percentage in enumerate(tp_levels[1:], start=2):
+                else:
+                    system_logger.info(f"✅ SL attached to position: SL={sl_price}")
+            
+            # Place ALL TP orders as conditional orders with PARTIAL quantities
+            if tp_levels and position_size:
+                for i, tp_percentage in enumerate(tp_levels, start=1):
                     try:
                         # Calculate TP price for this level
                         if side == "Buy":  # Long position
@@ -271,7 +276,13 @@ class IntelligentTPSLHandlerFixed:
                         
                         system_logger.info(f"Setting additional TP level {i}: {tp_price} ({tp_percentage}%)")
                         
-                        # Create conditional order for additional TP
+                        # CRITICAL FIX: Calculate PARTIAL quantity for this TP level
+                        tp_portion = tp_portions[i-1]  # Get portion for this level
+                        tp_qty = position_size * tp_portion
+                        
+                        system_logger.info(f"TP{i} will close {float(tp_portion)*100:.1f}% of position ({tp_qty} contracts)")
+                        
+                        # Create conditional order for this TP level
                         # Determine trigger direction based on position side
                         if side == "Buy":  # Long position
                             trigger_direction = 1  # Rise (≥) for long TP
@@ -283,51 +294,57 @@ class IntelligentTPSLHandlerFixed:
                             "symbol": symbol,
                             "side": tp_side,
                             "orderType": "Market",
-                            "qty": str(position_size) if position_size else "0",
+                            "qty": str(tp_qty),  # ✅ PARTIAL quantity, not full position!
                             "triggerPrice": str(tp_price),
                             "triggerBy": "MarkPrice",
-                            "triggerDirection": trigger_direction,  # CRITICAL FIX: Add missing parameter
+                            "triggerDirection": trigger_direction,
                             "reduceOnly": True,
-                            "closeOnTrigger": True,
+                            "closeOnTrigger": False,  # ✅ CRITICAL: False for partial close!
                             "positionIdx": position_idx,
                             "orderLinkId": f"tp_{trade_id}_{i}"
                         }
                         
                         tp_result = await self._client.place_order(tp_order)
-                        system_logger.info(f"Additional TP {i} place_order response: {json.dumps(tp_result, indent=2)}")
+                        system_logger.info(f"TP{i} place_order response: {json.dumps(tp_result, indent=2)}")
                         
                         if tp_result and tp_result.get('retCode') == 0:
-                            system_logger.info(f"✅ Additional TP {i} placed successfully: {tp_price}")
+                            system_logger.info(f"✅ TP{i} placed successfully: {tp_price} ({float(tp_portion)*100:.1f}% of position = {tp_qty} contracts)")
                             all_tp_results.append({
                                 'tp_level': i,
                                 'tp_percentage': str(tp_percentage),
                                 'tp_price': str(tp_price),
+                                'tp_qty': str(tp_qty),
+                                'tp_portion': str(tp_portion),
                                 'success': True,
                                 'result': tp_result,
-                                'method': 'place_order'
+                                'method': 'conditional_order_partial'
                             })
                         else:
                             error_msg = tp_result.get('retMsg', 'Unknown error') if tp_result else 'No response'
-                            system_logger.error(f"❌ Additional TP {i} failed: {error_msg}")
+                            system_logger.error(f"❌ TP{i} failed: {error_msg}")
                             all_tp_results.append({
                                 'tp_level': i,
                                 'tp_percentage': str(tp_percentage),
                                 'tp_price': str(tp_price),
+                                'tp_qty': str(tp_qty),
+                                'tp_portion': str(tp_portion),
                                 'success': False,
                                 'error': error_msg,
-                                'method': 'place_order'
+                                'method': 'conditional_order_partial'
                             })
                             overall_success = False
                             
                     except Exception as e:
-                        system_logger.error(f"❌ Additional TP {i} placement error: {e}")
+                        system_logger.error(f"❌ TP{i} placement error: {e}")
                         all_tp_results.append({
                             'tp_level': i,
                             'tp_percentage': str(tp_percentage),
                             'tp_price': str(tp_price) if 'tp_price' in locals() else 'Unknown',
+                            'tp_qty': str(tp_qty) if 'tp_qty' in locals() else 'Unknown',
+                            'tp_portion': str(tp_portion) if 'tp_portion' in locals() else 'Unknown',
                             'success': False,
                             'error': str(e),
-                            'method': 'place_order'
+                            'method': 'conditional_order_partial'
                         })
                         overall_success = False
             

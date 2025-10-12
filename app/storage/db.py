@@ -56,7 +56,14 @@ except Exception:  # Fallback shim when aiosqlite isn't installable
 
     class _ConnShim:
         def __init__(self, path: str):
-            self._conn = sqlite3.connect(path, check_same_thread=False)
+            self._conn = sqlite3.connect(path, check_same_thread=False, timeout=10.0)
+            # Enable WAL mode for better concurrent access
+            try:
+                self._conn.execute('PRAGMA journal_mode=WAL')
+                self._conn.execute('PRAGMA busy_timeout=10000')  # 10 second timeout
+                self._conn.commit()
+            except Exception:
+                pass  # Silently ignore if PRAGMA not supported
 
         def execute(self, sql: str, params: tuple = ()):  # returns awaitable and async-context-manager
             return _ExecuteShim(self._conn, sql, params)
@@ -95,6 +102,8 @@ async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         # Lightweight migrations: ensure missing columns exist
         await _migrate_trades_table(db)
+        
+        # Create unified trades table with all required columns
         await db.execute(
             """
         CREATE TABLE IF NOT EXISTS trades (
@@ -108,10 +117,35 @@ async def init_db():
             leverage REAL,
             channel_name TEXT,
             state TEXT NOT NULL,
+            status TEXT DEFAULT 'active',
             realized_pnl REAL DEFAULT 0,
+            pnl REAL DEFAULT 0,
+            pnl_pct REAL DEFAULT 0,
+            pyramid_level INTEGER DEFAULT 0,
+            hedge_count INTEGER DEFAULT 0,
+            reentry_count INTEGER DEFAULT 0,
+            error_type TEXT,
             closed_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+        """
+        )
+        
+        # Create active_trades view for backward compatibility
+        await db.execute(
+            """
+        CREATE VIEW IF NOT EXISTS active_trades AS
+        SELECT trade_id, symbol, direction, state as status, created_at
+        FROM trades
+        WHERE state NOT IN ('DONE', 'CLOSED', 'CANCELLED')
+        """
+        )
+        
+        # Create trades_new view as alias to trades for backward compatibility
+        await db.execute(
+            """
+        CREATE VIEW IF NOT EXISTS trades_new AS
+        SELECT * FROM trades
         """
         )
         await db.execute(
@@ -148,20 +182,36 @@ async def init_db():
 
 
 async def _migrate_trades_table(db) -> None:
+    """Migrate trades table to add missing columns."""
     try:
         cols = []
         async with db.execute("PRAGMA table_info(trades)") as cur:
             rows = await cur.fetchall()
             cols = [r[1] for r in rows]  # r[1] is column name
-        # Add realized_pnl if missing
-        if "realized_pnl" not in cols:
-            await db.execute("ALTER TABLE trades ADD COLUMN realized_pnl REAL DEFAULT 0")
-        # Add closed_at if missing
-        if "closed_at" not in cols:
-            await db.execute("ALTER TABLE trades ADD COLUMN closed_at TIMESTAMP")
-        # Add created_at if missing
-        if "created_at" not in cols:
-            await db.execute("ALTER TABLE trades ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        
+        # Add missing columns for backward compatibility
+        migrations = [
+            ("realized_pnl", "ALTER TABLE trades ADD COLUMN realized_pnl REAL DEFAULT 0"),
+            ("closed_at", "ALTER TABLE trades ADD COLUMN closed_at TIMESTAMP"),
+            ("created_at", "ALTER TABLE trades ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+            ("status", "ALTER TABLE trades ADD COLUMN status TEXT DEFAULT 'active'"),
+            ("pnl", "ALTER TABLE trades ADD COLUMN pnl REAL DEFAULT 0"),
+            ("pnl_pct", "ALTER TABLE trades ADD COLUMN pnl_pct REAL DEFAULT 0"),
+            ("pyramid_level", "ALTER TABLE trades ADD COLUMN pyramid_level INTEGER DEFAULT 0"),
+            ("hedge_count", "ALTER TABLE trades ADD COLUMN hedge_count INTEGER DEFAULT 0"),
+            ("reentry_count", "ALTER TABLE trades ADD COLUMN reentry_count INTEGER DEFAULT 0"),
+            ("error_type", "ALTER TABLE trades ADD COLUMN error_type TEXT"),
+        ]
+        
+        for col_name, alter_sql in migrations:
+            if col_name not in cols:
+                try:
+                    await db.execute(alter_sql)
+                except Exception as e:
+                    # Ignore if column already exists
+                    if "duplicate column" not in str(e).lower():
+                        pass  # Silently ignore other errors
+        
         await db.commit()
     except Exception:
         # Best-effort migration; ignore if PRAGMA or ALTER not supported in env

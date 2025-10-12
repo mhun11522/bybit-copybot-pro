@@ -99,7 +99,7 @@ class TestPyramidSteps:
             Decimal("2.5"),   # Step 4
             Decimal("4.0"),   # Step 5
             Decimal("6.0"),   # Step 6
-            Decimal("8.1"),   # Step 7 (FIXED from 8.6%)
+            Decimal("8.6"),   # Step 7 (Customer spec: 8.6%, not 8.1%)
         ]
         
         for i, level in enumerate(STRICT_CONFIG.pyramid_levels):
@@ -147,9 +147,9 @@ class TestPyramidSteps:
         assert step6["target_im"] == 80
     
     def test_step7_im_total_100(self):
-        """Step 7 (+8.1%): IM total to 100 USDT (FIXED from 8.6%)."""
+        """Step 7 (+8.6%): IM total to 100 USDT (CLIENT SPEC)."""
         step7 = STRICT_CONFIG.pyramid_levels[6]
-        assert step7["trigger"] == Decimal("8.1"), "Step 7 must be 8.1% (not 8.6%)"
+        assert step7["trigger"] == Decimal("8.6"), "Step 7 must be 8.6% per CLIENT SPEC (doc/requirement.txt:40)"
         assert step7["action"] == "im_total"
         assert step7["target_im"] == 100
 

@@ -20,7 +20,8 @@ def test_exact_modes():
     assert LeveragePolicy.validate_leverage(Decimal("10"), "FAST") is True
     assert LeveragePolicy.validate_leverage(Decimal("7.5"), "DYNAMIC") is True
     assert LeveragePolicy.validate_leverage(Decimal("7.4"), "DYNAMIC") is False  # Below minimum
-    assert LeveragePolicy.validate_leverage(Decimal("50"), "DYNAMIC") is True
+    assert LeveragePolicy.validate_leverage(Decimal("25"), "DYNAMIC") is True  # CLIENT SPEC: DYNAMIC capped at 25x
+    assert LeveragePolicy.validate_leverage(Decimal("50"), "DYNAMIC") is False  # CLIENT SPEC: DYNAMIC max is 25x
     assert LeveragePolicy.validate_leverage(Decimal("51"), "DYNAMIC") is False  # Above maximum
 
 def test_forbidden_gap():

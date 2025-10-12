@@ -1,8 +1,54 @@
-.venv/
-.env
-*.session
-trades.sqlite
+# Python
 __pycache__/
-*.pyc
-.pytest_cache/
-*.log
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.sqlite
+*.session
+*.session-journal
+.env
+bot_database_export.xlsx
+bybit_orders_*.xlsx
+
+# Logs (IMPORTANT: Keep logs directory structure)
+logs/*.log
+!logs/.gitkeep
+
+# Sensitive data
+*.key
+*.pem
+config/secrets.json

@@ -15,7 +15,7 @@ BASE_IM = Decimal(os.getenv("BASE_IM", "20"))  # 20 USDT base initial margin
 MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "100"))  # Max 100 concurrent trades
 
 # Bybit Configuration
-BYBIT_ENDPOINT = os.getenv("BYBIT_ENDPOINT", "https://api-testnet.bybit.com")  # TESTNET by default
+BYBIT_ENDPOINT = os.getenv("BYBIT_ENDPOINT", "https://api-demo.bybit.com")  # DEMO by default
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY") or ""
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET") or ""
 BYBIT_RECV_WINDOW = os.getenv("BYBIT_RECV_WINDOW", "30000")

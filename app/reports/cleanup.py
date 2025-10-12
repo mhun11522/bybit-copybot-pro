@@ -27,11 +27,11 @@ async def cleanup_old_orders():
     
     async with aiosqlite.connect(DB_PATH) as db:
         # Find trades that are still pending (no position opened) after 6 days
+        # Only clean up orders that haven't opened positions yet
         async with db.execute("""
             SELECT trade_id, symbol, channel_name, created_at
             FROM trades
-            WHERE state != 'OPEN' 
-            AND state != 'DONE'
+            WHERE state IN ('ORDER_PLACED', 'ORDER_PENDING', 'ENTRY_WAITING')
             AND created_at < ?
         """, (cutoff_str,)) as cur:
             old_trades = await cur.fetchall()

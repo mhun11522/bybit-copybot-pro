@@ -1,4 +1,4 @@
-"""Bybit confirmation gate - no Telegram until Bybit OK."""
+"""Bybit confirmation gate - no Telegram until Bybit OK (CLIENT SPEC compliance)."""
 
 import asyncio
 from typing import Dict, Any, Optional, Callable, Awaitable, List
@@ -24,7 +24,12 @@ async def retry_until_ok(op, *, attempts=5, delay=1.0, op_name=""):
     raise RuntimeError(f"{op_name or 'operation'} failed after {attempts} attempts: {last}")
 
 class ConfirmationGate:
-    """Gate that ensures no Telegram messages until Bybit confirms operations."""
+    """
+    Gate that ensures no Telegram messages until Bybit confirms operations.
+    
+    CLIENT SPEC: All operational messages (except "Signal received & copied")
+    must only be sent AFTER Bybit confirmation with real confirmed data.
+    """
     
     def __init__(self):
         self._pending_confirmations: Dict[str, Dict[str, Any]] = {}
@@ -94,6 +99,56 @@ class ConfirmationGate:
         
         ret_code = bybit_result.get('retCode', -1)
         return ret_code == 0
+    
+    async def _fetch_confirmed_im(self, symbol: str) -> Decimal:
+        """
+        Fetch confirmed IM (Initial Margin) from Bybit for a symbol.
+        
+        CLIENT SPEC: IM must be fetched from Bybit and confirmed, never assumed.
+        
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+        
+        Returns:
+            Decimal: Confirmed IM in USDT (defaults to 0 if fetch fails)
+        """
+        try:
+            from app.bybit.client import get_bybit_client
+            client = get_bybit_client()
+            
+            # Get position information from Bybit
+            positions_response = await client.get_positions("linear", symbol)
+            
+            if positions_response and positions_response.get("retCode") == 0:
+                positions_list = positions_response.get("result", {}).get("list", [])
+                
+                if positions_list:
+                    # Extract IM (may appear as positionIM, positionMargin, or margin)
+                    position = positions_list[0]
+                    im_value = (
+                        position.get("positionIM") or 
+                        position.get("positionMargin") or 
+                        position.get("margin") or 
+                        position.get("positionValue")
+                    )
+                    
+                    if im_value is not None:
+                        im_decimal = Decimal(str(im_value))
+                        system_logger.info(f"Confirmed IM for {symbol}: {im_decimal} USDT", {
+                            "symbol": symbol,
+                            "im": float(im_decimal)
+                        })
+                        return im_decimal
+            
+            system_logger.warning(f"Could not fetch confirmed IM for {symbol}, defaulting to 0", {
+                "symbol": symbol,
+                "response": positions_response
+            })
+            return Decimal("0")
+            
+        except Exception as e:
+            system_logger.error(f"Error fetching confirmed IM for {symbol}: {e}", exc_info=True)
+            return Decimal("0")
     
     async def place_entry_orders(
         self,
@@ -214,21 +269,52 @@ class ConfirmationGate:
                 pass
         
         async def telegram_callback(bybit_result):
-            # Send confirmation message only after Bybit confirms
-            message = f"""
-🎯 **Signal mottagen & kopierad**
-
-📊 **Symbol:** {symbol}
-📈 **Riktning:** {direction}
-💰 **Storlek:** {qty}
-⚡ **Hävstång:** {leverage}x
-📺 **Källa:** {channel_name}
-⏰ **Tid:** {asyncio.get_event_loop().time()}
-
-✅ **Order placerad** - Väntar på fyllning
-            """.strip()
+            """
+            Send Telegram confirmation ONLY after Bybit confirms (CLIENT SPEC).
             
-            await send_message(message)
+            Uses TemplateEngine with all required Bybit-confirmed fields.
+            """
+            from app.telegram.engine import render_template
+            
+            # Extract order ID from Bybit result
+            order_results = bybit_result.get("order_results", [])
+            order_id = "N/A"
+            if order_results:
+                # Get first order ID from results
+                first_result = order_results[0]
+                if isinstance(first_result, dict):
+                    order_id = first_result.get("result", {}).get("orderId", "N/A")
+            
+            # Fetch confirmed IM from Bybit (CLIENT SPEC requirement)
+            im_confirmed = await self._fetch_confirmed_im(symbol)
+            
+            # Prepare data for template with all CLIENT SPEC required fields
+            template_data = {
+                "symbol": symbol,
+                "side": direction,
+                "direction": direction,
+                "qty": qty,
+                "size": qty,
+                "leverage": leverage,
+                "source_name": channel_name,
+                "channel_name": channel_name,
+                "order_id": order_id,
+                "post_only": (STRICT_CONFIG.entry_time_in_force == "PostOnly"),
+                "reduce_only": False,  # Entry orders are never reduce-only
+                "im_confirmed": im_confirmed,
+            }
+            
+            # Render template using TemplateEngine
+            rendered = render_template("ORDER_PLACED", template_data)
+            
+            # Send message with full metadata for logging
+            await send_message(
+                rendered["text"],
+                template_name=rendered["template_name"],
+                trade_id=rendered["trade_id"],
+                symbol=rendered["symbol"],
+                hashtags=rendered["hashtags"]
+            )
         
         return await self.wait_for_confirmation(
             operation_id, bybit_operation, telegram_callback
@@ -450,8 +536,13 @@ class ConfirmationGate:
                 pass
         
         async def telegram_callback(bybit_result):
-            # Send confirmation message only after Bybit confirms
-            # Use the actual calculated TP/SL values from the operation result
+            """
+            Send TP/SL confirmation ONLY after Bybit confirms (CLIENT SPEC).
+            
+            Note: TP/SL confirmations use simpler formatting since they're
+            post-position placement updates.
+            """
+            # Extract actual TP/SL values from Bybit result
             actual_tps = []
             actual_sl = "N/A"
             
@@ -460,26 +551,27 @@ class ConfirmationGate:
                     if 'intelligent_tpsl' in result:
                         tpsl_data = result['intelligent_tpsl']
                         if 'tp_levels' in tpsl_data:
-                            actual_tps = tpsl_data['tp_levels']
+                            actual_tps = [f"{tp}%" for tp in tpsl_data['tp_levels']]
                         if 'sl_percentage' in tpsl_data:
                             actual_sl = f"{tpsl_data['sl_percentage']}%"
             
             # Fallback to original values if no actual values found
             if not actual_tps:
                 actual_tps = [str(tp) for tp in tps]
-            if actual_sl == "N/A":
+            if actual_sl == "N/A" and sl:
                 actual_sl = str(sl)
             
-            message = f"""✅ TP/SL bekräftad av Bybit
+            # CLIENT SPEC: Simple TP/SL confirmation with bold labels
+            message = f"""**✅ TP/SL bekräftad av Bybit**
 
-📊 Symbol: {symbol}
-📈 Riktning: {side}
-💰 Storlek: {qty}
-🎯 TP: {', '.join(actual_tps)}
-🛑 SL: {actual_sl}
-📺 Källa: {channel_name}"""
+📊 **Symbol:** {symbol}
+📈 **Riktning:** {side}
+💰 **Storlek:** {qty}
+🎯 **TP:** {', '.join(actual_tps)}
+🛑 **SL:** {actual_sl}
+📺 **Källa:** {channel_name}"""
             
-            await send_message(message)
+            await send_message(message, template_name="tp_sl_confirmed", symbol=symbol)
         
         return await self.wait_for_confirmation(
             operation_id, bybit_operation, telegram_callback
@@ -529,9 +621,11 @@ class ConfirmationGate:
                 pass
         
         async def telegram_callback(bybit_result):
-            # Send confirmation message only after Bybit confirms
-            message = f"""
-🎯 **Position stängd**
+            """
+            Send position closed confirmation ONLY after Bybit confirms (CLIENT SPEC).
+            """
+            # CLIENT SPEC: Position closed with bold labels
+            message = f"""**✅ Position stängd**
 
 📊 **Symbol:** {symbol}
 📈 **Riktning:** {side}
@@ -539,10 +633,9 @@ class ConfirmationGate:
 📝 **Anledning:** {reason}
 📺 **Källa:** {channel_name}
 
-✅ **Position stängd** bekräftad av Bybit
-            """.strip()
+⚠️ **Bekräftat i Bybit**"""
             
-            await send_message(message)
+            await send_message(message, template_name="position_closed", symbol=symbol)
         
         return await self.wait_for_confirmation(
             operation_id, bybit_operation, telegram_callback

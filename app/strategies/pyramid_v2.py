@@ -28,7 +28,7 @@ class PyramidStrategyV2:
             Decimal("2.5"): {"action": "im_total", "target_im": Decimal("40")},   # Step 4: +2.5% → IM total 40 USDT
             Decimal("4.0"): {"action": "im_total", "target_im": Decimal("60")},   # Step 5: +4.0% → IM total 60 USDT
             Decimal("6.0"): {"action": "im_total", "target_im": Decimal("80")},   # Step 6: +6.0% → IM total 80 USDT
-            Decimal("8.1"): {"action": "im_total", "target_im": Decimal("100")},  # Step 7: +8.1% → IM total 100 USDT (FIXED from 8.6%)
+            Decimal("8.6"): {"action": "im_total", "target_im": Decimal("100")},  # Step 7: +8.6% → IM total 100 USDT (CLIENT SPEC)
         }
         self.activated_levels = set()
         self.max_adds = 7
@@ -102,6 +102,12 @@ class PyramidStrategyV2:
         try:
             # Get current position
             pos = await self.bybit.get_position("linear", self.symbol)
+            
+            # CRITICAL FIX: Check API return code first
+            if pos.get('retCode') != 0:
+                system_logger.error(f"Failed to get position for IM check: {pos.get('retMsg')}")
+                return False
+            
             if pos.get("result", {}).get("list"):
                 position = pos["result"]["list"][0]
                 current_im = Decimal(str(position.get("initialMargin", "0")))
@@ -157,11 +163,15 @@ class PyramidStrategyV2:
                 result = await self.bybit.place_order(order_body)
                 if result.get('retCode') == 0:
                     system_logger.info(f"SL moved to breakeven for {self.symbol}")
+                    return True
                 else:
                     system_logger.error(f"Failed to move SL to breakeven: {result}")
+                    return False
+            return False
                     
         except Exception as e:
             system_logger.error(f"Breakeven SL move error: {e}", exc_info=True)
+            return False
     
     async def _set_full_leverage(self) -> bool:
         """
@@ -246,6 +256,12 @@ class PyramidStrategyV2:
         try:
             # Get current position
             pos = await self.bybit.positions("linear", self.symbol)
+            
+            # CRITICAL FIX: Check API return code first
+            if pos.get('retCode') != 0:
+                system_logger.error(f"Failed to get position for IM update: {pos.get('retMsg')}")
+                return False
+            
             if pos.get("result", {}).get("list"):
                 position = pos["result"]["list"][0]
                 current_size = Decimal(str(position.get("size", "0")))
@@ -263,6 +279,28 @@ class PyramidStrategyV2:
                 # Calculate additional size needed
                 # Formula: additional_qty = (im_to_add * leverage) / price
                 additional_size = (im_to_add * leverage) / avg_price
+                
+                # CRITICAL FIX: Quantize quantity to valid step size
+                from app.core.symbol_registry import get_symbol_registry
+                symbol_registry = get_symbol_registry()
+                symbol_info = await symbol_registry.get_symbol_info(self.symbol)
+                
+                if symbol_info:
+                    # Quantize to valid step size
+                    additional_size = symbol_info.quantize_qty(additional_size)
+                    
+                    # Validate quantity meets minimum requirements
+                    if not symbol_info.validate_qty(additional_size):
+                        system_logger.error(f"Quantity {additional_size} invalid for {self.symbol} (min: {symbol_info.min_qty}, max: {symbol_info.max_qty})")
+                        return False
+                    
+                    # Validate notional value
+                    notional = additional_size * avg_price
+                    if not symbol_info.validate_notional(notional):
+                        system_logger.error(f"Notional {notional} too small for {self.symbol} (min: {symbol_info.min_notional})")
+                        return False
+                else:
+                    system_logger.warning(f"No symbol info found for {self.symbol}, using raw quantity")
                 
                 system_logger.info(f"Adding {im_to_add} USDT IM to {self.symbol} (current: {current_im}, target: {target_im_total})")
                 
@@ -305,6 +343,12 @@ class PyramidStrategyV2:
         try:
             # Get current position
             pos = await self.bybit.get_position("linear", self.symbol)
+            
+            # CRITICAL FIX: Check API return code first
+            if pos.get('retCode') != 0:
+                system_logger.error(f"Failed to get position for IM addition: {pos.get('retMsg')}")
+                return  # Exit early on error
+            
             if pos.get("result", {}).get("list"):
                 position = pos["result"]["list"][0]
                 current_size = Decimal(str(position.get("size", "0")))

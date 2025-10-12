@@ -18,7 +18,7 @@ class BreakevenStrategyV2:
         from app.bybit.client import get_bybit_client
         self.bybit = get_bybit_client()
         self.activated = False
-        self.trigger_pct = Decimal("0.0015")  # 0.15% trigger for TP2
+        self.trigger_pct = Decimal("2.3")  # CLIENT SPEC: +2.3% → SL to breakeven + costs
     
     async def check_and_activate(self, current_price: Decimal, avg_entry: Decimal) -> bool:
         """Check if breakeven should be activated and activate it."""
@@ -75,9 +75,12 @@ class BreakevenStrategyV2:
                 }
                 message = SwedishTemplatesV2.breakeven_activated(signal_data)
                 await send_message(message)
+                return True
                 
             else:
                 system_logger.error(f"Failed to activate breakeven: {result}")
+                return False
                 
         except Exception as e:
             system_logger.error(f"Breakeven activation error: {e}", exc_info=True)
+            return False

@@ -354,7 +354,14 @@ class StrictSignalParser:
             # Apply leverage policy (after SL synthesis)
             leverage, mode = LeveragePolicy.classify_leverage(mode_hint, bool(sl), raw_leverage)
             
-            # Validate leverage gap
+            # CRITICAL FIX: Validate and correct leverage according to customer requirements
+            # This enforces SWING=6x, FAST=10x, DYNAMIC≥7.5x
+            validated_leverage = self.validate_leverage(leverage, mode)
+            if validated_leverage != leverage:
+                system_logger.info(f"Leverage adjusted: {leverage}x → {validated_leverage}x for mode {mode}")
+                leverage = validated_leverage
+            
+            # Validate leverage gap (should already be handled by validate_leverage, but double-check)
             if LeveragePolicy.is_forbidden_gap(leverage):
                 raise ValueError(f"Forbidden leverage gap: {leverage} (6-7.5 range not allowed)")
             
@@ -709,10 +716,9 @@ class StrictSignalParser:
         if gold_sl_match:
             try:
                 sl = to_decimal(gold_sl_match.group(1))
-                # CRITICAL FIX: Validate realistic price ranges
-                # Reject values that look like percentages or labels
-                if (Decimal("0.001") <= sl <= Decimal("1000000") and 
-                    sl >= Decimal("1.0")):  # Must be at least $1 (reject small percentages)
+                # Validate realistic price ranges
+                # Accept any reasonable price between 0.0001 and 1M
+                if Decimal("0.0001") <= sl <= Decimal("1000000"):
                     return sl
             except (ValueError, TypeError):
                 pass
@@ -722,10 +728,9 @@ class StrictSignalParser:
             if matches:
                 try:
                     sl = to_decimal(matches[0])
-                    # CRITICAL FIX: Validate realistic price ranges
-                    # Reject values that look like percentages or labels
-                    if (Decimal("0.001") <= sl <= Decimal("1000000") and 
-                        sl >= Decimal("1.0")):  # Must be at least $1 (reject small percentages)
+                    # Validate realistic price ranges
+                    # Accept any reasonable price between 0.0001 and 1M
+                    if Decimal("0.0001") <= sl <= Decimal("1000000"):
                         return sl
                 except (ValueError, TypeError):
                     continue
@@ -743,6 +748,57 @@ class StrictSignalParser:
                 except (ValueError, TypeError):
                     continue
         return None
+    
+    def validate_leverage(self, leverage: Optional[Decimal], signal_type: str) -> Decimal:
+        """
+        Validate and correct leverage according to customer rules.
+        
+        CLIENT SPEC (doc/requirement.txt:14):
+        - SWING: Always 6x
+        - FAST: Always 10x
+        - DYNAMIC: Must be ≥7.5x (forbidden gap: 6 < lev < 7.5)
+        
+        Args:
+            leverage: Extracted leverage from signal
+            signal_type: "SWING", "FAST", or "DYNAMIC"
+            
+        Returns:
+            Validated/corrected leverage
+        """
+        # SWING: force to 6x
+        if signal_type == "SWING":
+            if leverage and leverage != Decimal("6"):
+                system_logger.info(f"SWING leverage adjusted {leverage}x → 6x")
+            return Decimal("6")
+        
+        # FAST: force to 10x
+        if signal_type == "FAST":
+            if leverage and leverage != Decimal("10"):
+                system_logger.info(f"FAST leverage adjusted {leverage}x → 10x")
+            return Decimal("10")
+        
+        # DYNAMIC: validate against forbidden gap and minimum
+        if not leverage:
+            # No leverage specified, use minimum DYNAMIC leverage
+            system_logger.info("No leverage specified, using minimum DYNAMIC leverage 7.5x")
+            return Decimal("7.5")
+        
+        # Check forbidden gap (6 < leverage < 7.5)
+        if Decimal("6") < leverage < Decimal("7.5"):
+            system_logger.warning(f"Leverage {leverage}x in forbidden gap (6-7.5), rounding up to 7.5x")
+            return Decimal("7.5")
+        
+        # Check minimum DYNAMIC leverage
+        if leverage < Decimal("7.5"):
+            system_logger.info(f"DYNAMIC leverage too low ({leverage}x), setting to minimum 7.5x")
+            return Decimal("7.5")
+        
+        # Check maximum leverage (cap at 25x for safety)
+        if leverage > Decimal("25"):
+            system_logger.warning(f"DYNAMIC leverage too high ({leverage}x), capping at 25x")
+            return Decimal("25")
+        
+        return leverage
     
     def _extract_mode(self, message: str) -> Optional[str]:
         """Extract mode hint from message."""
@@ -844,21 +900,23 @@ class StrictSignalParser:
             return leverage
         
         # Calculate dynamic leverage based on IM target and position size
-        # This will be refined when we have the actual position size
-        # For now, use a reasonable dynamic value
-        base_leverage = STRICT_CONFIG.min_dynamic_leverage
+        # Use deterministic calculation based on configuration
+        base_leverage = STRICT_CONFIG.min_dynamic_leverage  # 7.5x minimum
         
-        # Add some randomness to make it look more dynamic (12.01, 15.67, etc.)
-        import random
-        random_factor = Decimal(str(random.uniform(1.0, 2.0)))
-        dynamic_leverage = base_leverage * random_factor
+        # Calculate scaling factor based on IM target (deterministic)
+        # Higher IM target = slightly higher leverage (up to 1.5x scaling)
+        if hasattr(STRICT_CONFIG, 'im_target'):
+            im_factor = min(STRICT_CONFIG.im_target / Decimal("20"), Decimal("1.5"))
+            dynamic_leverage = base_leverage * im_factor
+        else:
+            dynamic_leverage = base_leverage
         
-        # Round to 2 decimal places for realistic dynamic values
-        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+        # Round to 1 decimal place for clean values
+        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.1'), rounding=ROUND_DOWN)
         
-        # Ensure it's within bounds
+        # Ensure it's within bounds [7.5, 25]
         dynamic_leverage = max(dynamic_leverage, STRICT_CONFIG.min_dynamic_leverage)
-        dynamic_leverage = min(dynamic_leverage, Decimal("50"))
+        dynamic_leverage = min(dynamic_leverage, Decimal("25"))  # Max 25x for dynamic
         
         return dynamic_leverage
     

@@ -1,4 +1,4 @@
-"""Signal blocking system with 3-hour window and 5% tolerance."""
+"""Signal blocking system with 3-hour window and 5-10% heuristic (CLIENT SPEC)."""
 
 import time
 import hashlib
@@ -7,13 +7,14 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from app.core.logging import system_logger
 from app.core.strict_config import STRICT_CONFIG
+from app.config.settings import BLOCK_SAME_DIR_SECONDS
 
 class SignalBlockingManager:
-    """Manages signal blocking with 3-hour window and 5% tolerance."""
+    """Manages signal blocking with 3-hour window and 5-10% heuristic (CLIENT SPEC)."""
     
     def __init__(self):
-        self.block_duration_seconds = 10800  # 3 hours
-        self.tolerance_percent = Decimal("5")  # 5% tolerance
+        self.block_duration_seconds = BLOCK_SAME_DIR_SECONDS  # 3 hours (CLIENT SPEC - from config)
+        self.tolerance_percent = Decimal("5")  # 5% tolerance baseline
         self._blocked_signals: Dict[str, Dict[str, Any]] = {}
         self._cleanup_interval = 300  # Cleanup every 5 minutes
         self._last_cleanup = time.time()
@@ -85,6 +86,11 @@ class SignalBlockingManager:
         """
         Check if signal should be blocked.
         
+        CLIENT SPEC: 3h window + 5-10% heuristic:
+        - ≤5% => block
+        - ≥10% => accept
+        - 5-10%: ≤6% block, ≥9% accept, 6-9% conservative block
+        
         Returns:
             (is_blocked, reason)
         """
@@ -97,29 +103,66 @@ class SignalBlockingManager:
         if signal_key in self._blocked_signals:
             blocked_data = self._blocked_signals[signal_key]
             
-            # Check if still within block duration
+            # Check if still within block duration (3 hours)
             if now - blocked_data['blocked_at'] < self.block_duration_seconds:
-                # Check if this signal is similar to the blocked one
-                if self._is_similar_signal(signal, blocked_data['original_signal']):
-                    reason = f"Similar signal blocked for 3 hours (from {blocked_data['original_channel']})"
+                # Heuristic 5-10% per CLIENT SPEC
+                diff = self._calculate_value_difference(signal, blocked_data['original_signal'])
+                
+                # ≤5% => block
+                if diff <= Decimal("5"):
+                    reason = f"Blocked (≤5% diff: {diff:.2f}%, 2h window)"
                     system_logger.info(f"Signal blocked: {reason}", {
                         'symbol': signal.get('symbol'),
                         'direction': signal.get('direction'),
                         'current_channel': signal.get('channel_name'),
                         'blocked_channel': blocked_data['original_channel'],
-                        'blocked_at': blocked_data['blocked_at'],
+                        'diff_percent': float(diff),
                         'remaining_seconds': self.block_duration_seconds - (now - blocked_data['blocked_at'])
                     })
                     return True, reason
+                
+                # ≥10% => accept (pass through)
+                if diff >= Decimal("10"):
+                    system_logger.info(f"Signal accepted (≥10% diff: {diff:.2f}%)", {
+                        'symbol': signal.get('symbol'),
+                        'direction': signal.get('direction'),
+                        'diff_percent': float(diff)
+                    })
+                    # Don't return False here, let it fall through to block for future signals
+                else:
+                    # 5-10%: thresholds ~6%/~9%
+                    if diff <= Decimal("6"):
+                        reason = f"Blocked (~6% diff: {diff:.2f}%, 2h window)"
+                        system_logger.info(f"Signal blocked: {reason}", {
+                            'symbol': signal.get('symbol'),
+                            'direction': signal.get('direction'),
+                            'diff_percent': float(diff)
+                        })
+                        return True, reason
+                    elif diff >= Decimal("9"):
+                        system_logger.info(f"Signal accepted (~9% diff: {diff:.2f}%)", {
+                            'symbol': signal.get('symbol'),
+                            'direction': signal.get('direction'),
+                            'diff_percent': float(diff)
+                        })
+                        # Pass through
+                    else:
+                        # Middle 6-9%: conservative default — block
+                        reason = f"Blocked (6-9% diff: {diff:.2f}%, conservative rule)"
+                        system_logger.info(f"Signal blocked: {reason}", {
+                            'symbol': signal.get('symbol'),
+                            'direction': signal.get('direction'),
+                            'diff_percent': float(diff)
+                        })
+                        return True, reason
         
-        # Signal is not blocked, but check if we should block future similar signals
-        # This implements the "block for copy" logic
+        # Signal is not blocked, block future similar signals
         self._block_signal(signal)
         
         return False, None
     
     def _block_signal(self, signal: Dict[str, Any]):
-        """Block future similar signals for 3 hours."""
+        """Block future similar signals for 3 hours (CLIENT SPEC)."""
         signal_key = self._create_signal_key(signal)
         now = time.time()
         
@@ -148,7 +191,7 @@ class SignalBlockingManager:
         return {
             'total_blocked_signals': len(self._blocked_signals),
             'active_blocks': active_blocks,
-            'block_duration_hours': self.block_duration_seconds / 3600,
+            'block_duration_hours': round(self.block_duration_seconds / 3600, 2),
             'tolerance_percent': float(self.tolerance_percent),
             'last_cleanup': self._last_cleanup
         }

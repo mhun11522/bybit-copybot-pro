@@ -83,8 +83,11 @@ class IdempotencyManager:
         return False
     
     def mark_processed(self, signal: Dict[str, Any]):
-        """Mark signal as processed (same as is_duplicate but explicit)."""
-        self.is_duplicate(signal)
+        """Mark signal as processed (adds to cache without checking)."""
+        key = self._create_idempotency_key(signal)
+        self._cache[key] = time.time()
+        # NOTE: Don't call is_duplicate() here - that would check the cache
+        # and find the signal that was just added, causing false duplicate detection
     
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache statistics for monitoring."""

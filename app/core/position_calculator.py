@@ -140,22 +140,33 @@ class PositionCalculator:
                 )
                 final_notional = final_contracts * entry_price
                 
-                # Fallback: If notional is still too small, use maximum allowed quantity
-                if final_notional < Decimal("5.0"):
-                    system_logger.warning(f"Notional {final_notional} still too small, using maximum quantity")
-                    # Use 90% of max quantity to ensure we don't exceed limits
-                    max_safe_qty = symbol_info.max_qty * Decimal("0.9")
-                    final_contracts = max_safe_qty
+                # Fallback: If notional is still too small, increase IM proportionally
+                if final_notional < symbol_info.min_notional:
+                    system_logger.warning(f"Notional {final_notional} below minimum {symbol_info.min_notional}, adjusting IM")
+                    # Calculate required IM to meet min_notional
+                    required_im = (symbol_info.min_notional / leverage) * Decimal("1.1")  # Add 10% buffer
+                    system_logger.info(f"Increasing IM from {im} to {required_im} to meet min_notional")
+                    
+                    # Recalculate with adjusted IM
+                    final_contracts = PositionCalculator.calculate_contract_qty_simple(
+                        symbol=symbol,
+                        im_usdt=required_im,
+                        leverage=leverage,
+                        entry_price=entry_price,
+                        symbol_info=symbol_info
+                    )
                     final_notional = final_contracts * entry_price
-                    system_logger.info(f"Using maximum safe quantity: {final_contracts} contracts, notional: {final_notional}")
+                    system_logger.info(f"Adjusted position: {final_contracts} contracts, notional: {final_notional}")
                     
             except ValueError as e:
                 system_logger.error(f"Contract calculation failed: {e}")
-                # Fallback to maximum safe quantity
-                max_safe_qty = symbol_info.max_qty * Decimal("0.9")
-                final_contracts = max_safe_qty
+                # Fallback: Calculate minimum viable position
+                min_contracts = symbol_info.min_notional / entry_price
+                # Quantize to step size, rounding UP to ensure we meet minimum
+                from decimal import ROUND_UP
+                final_contracts = (min_contracts / symbol_info.step_size).quantize(Decimal('1'), rounding=ROUND_UP) * symbol_info.step_size
                 final_notional = final_contracts * entry_price
-                system_logger.info(f"Using maximum safe quantity as fallback: {final_contracts} contracts, notional: {final_notional}")
+                system_logger.warning(f"Using minimum viable position: {final_contracts} contracts, notional: {final_notional}")
             
             # Step 7: Final validation
             if not symbol_info.validate_qty(final_contracts):

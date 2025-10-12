@@ -192,7 +192,8 @@ Entry Targets:
         assert LeveragePolicy.validate_leverage(Decimal("6"), "SWING") == True
         assert LeveragePolicy.validate_leverage(Decimal("10"), "FAST") == True
         assert LeveragePolicy.validate_leverage(Decimal("7.5"), "DYNAMIC") == True
-        assert LeveragePolicy.validate_leverage(Decimal("50"), "DYNAMIC") == True
+        assert LeveragePolicy.validate_leverage(Decimal("25"), "DYNAMIC") == True  # CLIENT SPEC: DYNAMIC max is 25x
+        assert LeveragePolicy.validate_leverage(Decimal("50"), "DYNAMIC") == False  # CLIENT SPEC: 50x exceeds DYNAMIC max
         
         # Invalid leverages
         assert LeveragePolicy.validate_leverage(Decimal("5"), "SWING") == False

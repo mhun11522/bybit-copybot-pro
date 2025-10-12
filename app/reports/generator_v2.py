@@ -236,6 +236,108 @@ class ReportGeneratorV2:
             system_logger.error(f"Error getting top symbols: {e}", exc_info=True)
             return []
     
+    async def generate_group_daily(self) -> Dict[str, Any]:
+        """
+        Generate group daily report (CLIENT SPEC).
+        
+        Returns symbol-by-symbol breakdown with %/USDT for today.
+        
+        Returns:
+            {
+                'group_name': str,
+                'rows': [{'symbol': str, 'pct': float, 'usdt': float}, ...],
+                'count': int,
+                'sum_usdt': float,
+                'sum_pct': float
+            }
+        """
+        try:
+            today = datetime.now().date()
+            start_time = datetime.combine(today, datetime.min.time())
+            end_time = datetime.combine(today, datetime.max.time())
+            
+            # Get all trades for today, grouped by symbol
+            trades = await self._get_trades_today_grouped(start_time, end_time)
+            
+            group_name = trades.get("group_name", "ALL SOURCES")
+            rows = trades.get("rows", [])
+            count = len(rows)
+            sum_usdt = sum(r.get("usdt", 0.0) for r in rows)
+            sum_pct = sum(r.get("pct", 0.0) for r in rows)
+            
+            return {
+                "group_name": group_name,
+                "rows": rows,
+                "count": count,
+                "sum_usdt": sum_usdt,
+                "sum_pct": sum_pct
+            }
+            
+        except Exception as e:
+            system_logger.error(f"Error generating group daily report: {e}", exc_info=True)
+            return {
+                "group_name": "ERROR",
+                "rows": [],
+                "count": 0,
+                "sum_usdt": 0.0,
+                "sum_pct": 0.0
+            }
+    
+    async def _get_trades_today_grouped(self, start_time: datetime, end_time: datetime) -> Dict[str, Any]:
+        """
+        Get today's trades grouped by symbol for group report (CLIENT SPEC).
+        
+        Returns:
+            {
+                'group_name': str,
+                'rows': [{'symbol': str, 'pct': float, 'usdt': float}, ...]
+            }
+        """
+        try:
+            db = await get_db_connection()
+            async with db:
+                # Get grouped data by symbol
+                cursor = await db.execute("""
+                    SELECT 
+                        symbol,
+                        SUM(profit) as profit_usdt,
+                        AVG(profit_percent) as profit_pct,
+                        channel_name
+                    FROM trades
+                    WHERE created_at >= ? AND created_at <= ?
+                    GROUP BY symbol
+                    ORDER BY symbol
+                """, (start_time.isoformat(), end_time.isoformat()))
+                
+                rows_data = await cursor.fetchall()
+                
+                rows = []
+                group_name = "ALL SOURCES"
+                
+                for row in rows_data:
+                    symbol, profit_usdt, profit_pct, channel = row
+                    
+                    if channel:
+                        group_name = channel  # Use last channel as group name
+                    
+                    rows.append({
+                        "symbol": symbol or "UNKNOWN",
+                        "pct": float(profit_pct or 0),
+                        "usdt": float(profit_usdt or 0)
+                    })
+                
+                return {
+                    "group_name": group_name,
+                    "rows": rows
+                }
+                
+        except Exception as e:
+            system_logger.error(f"Error getting grouped trades: {e}", exc_info=True)
+            return {
+                "group_name": "ERROR",
+                "rows": []
+            }
+    
     def _get_empty_report(self) -> Dict[str, Any]:
         """Get empty report data."""
         return {

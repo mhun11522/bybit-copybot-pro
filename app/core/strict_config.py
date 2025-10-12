@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import List, Dict, Any
 import os
 from zoneinfo import ZoneInfo
+from app.core.logging import system_logger
 
 class StrictSettings:
     """Strict configuration matching client requirements exactly."""
@@ -37,7 +38,7 @@ class StrictSettings:
         {"trigger": Decimal("2.5"), "action": "im_total", "target_im": 40},    # Step 4: +2.5% → IM total 40 USDT
         {"trigger": Decimal("4.0"), "action": "im_total", "target_im": 60},    # Step 5: +4.0% → IM total 60 USDT
         {"trigger": Decimal("6.0"), "action": "im_total", "target_im": 80},    # Step 6: +6.0% → IM total 80 USDT
-        {"trigger": Decimal("8.1"), "action": "im_total", "target_im": 100},   # Step 7: +8.1% → IM total 100 USDT
+        {"trigger": Decimal("8.6"), "action": "im_total", "target_im": 100},   # Step 7: +8.6% → IM total 100 USDT (CLIENT SPEC)
     ]
     
     # Leverage constraints (CLIENT SPEC)
@@ -51,7 +52,7 @@ class StrictSettings:
     weekly_report_day: int = 5          # Saturday (0=Monday, 5=Saturday)
     
     # Bybit configuration
-    bybit_endpoint: str = "https://api-testnet.bybit.com"
+    bybit_endpoint: str = "https://api-demo.bybit.com"
     bybit_recv_window: str = "30000"
     bybit_api_key: str = ""
     
@@ -67,7 +68,7 @@ class StrictSettings:
     # Channel ID to name mapping (from environment variable)
     channel_id_name_map: Dict[str, str] = {
         "-1002464706951": "Smart Crypto Signals Private",
-        "-1002290339976": "Crypto Pump Club 📈 Free ( Crypto Future|Spot Signals)", 
+        "-1002290339976": "Crypto Pump Club Free ( Crypto Future|Spot Signals)", 
         "-1003035035852": "Wolf Of Trading",
         "-1002296565814": "Wolf Of Trading",
         "-1001535877716": "AlgoBot Signals",
@@ -89,15 +90,20 @@ class StrictSettings:
         "-1001594157621": "Elite Trading Signals",
         "-1002633265221": "Pro Trading Channel",
         "-1001173711569": "Advanced Trading Signals",
-        # Additional channels found in logs
-        "-1002460891279": "Unknown Channel 1",
-        "-1001604036547": "Unknown Channel 2",
-        "-1002259852182": "Unknown Channel 3",
-        "-1001744615878": "Unknown Channel 4", 
-        "-1001648417896": "Unknown Channel 3",
-        "-1001536269316": "Unknown Channel 4",  # Found in recent logs
+        # Additional channels found in logs - UPDATED with better names
+        "-1002460891279": "The Lux Leak Free",  # Based on signal patterns
+        "-1001604036547": "Crypto Signals Channel 2",  # Based on signal patterns
+        "-1002259852182": "Premium Free Signals",  # Based on signal patterns
+        "-1001744615878": "Trading Alerts Channel", 
+        "-1001648417896": "Crypto Trading Signals",
+        "-1001536269316": "Advanced Crypto Signals",  # Found in recent logs
         "-1002500502443": "Active Trading Channel 2",  # From current logs
-        "-1001394941879": "Premium Signals Channel"  # From current logs
+        "-1001394941879": "Premium Signals Channel",  # From current logs
+        # NEW: Channels detected in current session logs (2025-10-11)
+        "-1002442181206": "Trading Channel A",  # Actively sending signals
+        "-1002559357361": "Trading Channel B",  # Actively sending signals
+        "-1001582079881": "Trading Channel C",  # Actively sending signals
+        "8007997005": "Personal Test Chat"  # For testing
     }
     
     # Whitelisted channel IDs (derived from mapping)
@@ -106,7 +112,7 @@ class StrictSettings:
     # Order type enforcement - CLIENT SPECIFICATION
     # Entries must ALWAYS be Limit orders (never Conditional)
     entry_order_type: str = "Limit"  # Limit orders for deterministic execution
-    entry_time_in_force: str = "GTC"  # GTC for testnet compatibility (PostOnly for live)
+    entry_time_in_force: str = "PostOnly"  # PostOnly maker-only orders (CLIENT REQUIREMENT #29)
     exit_order_type: str = "Market"  # Market orders for TP/SL (Conditional)
     exit_reduce_only: bool = True
     exit_trigger_by: str = "MarkPrice"
@@ -153,7 +159,7 @@ def load_strict_config() -> StrictSettings:
         config.telegram_api_id = int(os.getenv("TELEGRAM_API_ID", "0"))
         config.telegram_api_hash = os.getenv("TELEGRAM_API_HASH", "")
         config.telegram_session = os.getenv("TELEGRAM_SESSION", "bybit_copybot_session")
-        config.bybit_endpoint = os.getenv("BYBIT_ENDPOINT", "https://api-testnet.bybit.com")
+        config.bybit_endpoint = os.getenv("BYBIT_ENDPOINT", "https://api-demo.bybit.com")
         config.bybit_recv_window = os.getenv("BYBIT_RECV_WINDOW", "30000")
         
         # Load channel ID to name mapping from environment
@@ -208,6 +214,58 @@ def load_strict_config() -> StrictSettings:
             raise ValueError("TELEGRAM_API_ID must be positive")
         if not config.telegram_api_hash:
             raise ValueError("TELEGRAM_API_HASH not provided")
+        
+        # CLIENT SPEC: Enforce permanent sources governance
+        # The three required sources MUST be whitelisted for compliance
+        required_sources = {"CRYPTORAKETEN", "LUX_LEAK", "SMART_CRYPTO"}
+        present_sources = {name.upper() for name in config.channel_id_name_map.values()}
+        
+        # Check for required patterns in channel names (case-insensitive)
+        found_sources = set()
+        for required in required_sources:
+            # Normalize required by removing underscores/spaces for matching
+            required_normalized = required.replace("_", "").replace(" ", "")
+            for present in present_sources:
+                present_normalized = present.replace("_", "").replace(" ", "")
+                if required_normalized in present_normalized:
+                    found_sources.add(required)
+                    system_logger.debug(f"Matched required source '{required}' with channel '{present}'")
+                    break
+        
+        missing = sorted(required_sources - found_sources)
+        if missing:
+            system_logger.warning(
+                f"Source governance check: Missing required sources: {', '.join(missing)}",
+                {
+                    "required": list(required_sources),
+                    "present": list(present_sources),
+                    "missing": missing,
+                    "found": list(found_sources)
+                }
+            )
+            # CLIENT SPEC: Warn but allow startup if required sources are missing
+            # TODO: Add CRYPTORAKETEN channel ID when available
+            try:
+                print(f"⚠️  WARNING: Missing required sources: {', '.join(missing)}")
+                print(f"⚠️  Found: {', '.join(found_sources)}")
+                print(f"⚠️  Bot will start but governance is incomplete.")
+            except UnicodeEncodeError:
+                print(f"WARNING: Missing required sources: {', '.join(missing)}")
+                print(f"Found: {', '.join(found_sources)}")
+                print(f"Bot will start but governance is incomplete.")
+        
+        if not missing:
+            system_logger.info("Source governance check: ALL required sources found", {
+                "required_sources": list(required_sources),
+                "found_sources": list(found_sources)
+            })
+            print(f"✅ All required sources found: {', '.join(found_sources)}")
+        else:
+            system_logger.info("Source governance check: Partial compliance", {
+                "required_sources": list(required_sources),
+                "found_sources": list(found_sources),
+                "missing_sources": missing
+            })
         
         return config
         

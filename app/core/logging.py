@@ -3,19 +3,26 @@
 import json
 import uuid
 import traceback
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional
+from pathlib import Path
 # Removed retcodes import - no longer needed
 
+# Create logs directory if it doesn't exist
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
 class StructuredLogger:
-    """Structured JSON logger with traceId support."""
+    """Structured JSON logger with traceId support and file output."""
     
     def __init__(self, name: str):
         self.name = name
         self.trace_id = str(uuid.uuid4())[:8]
+        self.log_file = LOG_DIR / f"{name}.log"
     
     def _log(self, level: str, message: str, data: Dict[str, Any] = None):
-        """Log structured message."""
+        """Log structured message to both stdout and file."""
         log_entry = {
             "timestamp": datetime.now().isoformat(),
             "level": level,
@@ -25,7 +32,18 @@ class StructuredLogger:
             "data": data or {}
         }
         
-        print(json.dumps(log_entry, ensure_ascii=False))
+        log_line = json.dumps(log_entry, ensure_ascii=False)
+        
+        # Print to stdout (for console viewing)
+        print(log_line)
+        
+        # Write to file (for persistence and auditing per CLIENT REQUIREMENT #21)
+        try:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(log_line + '\n')
+        except Exception as e:
+            # If file write fails, at least log to stdout
+            print(f"ERROR: Failed to write log to file {self.log_file}: {e}")
     
     def info(self, message: str, data: Dict[str, Any] = None):
         """Log info message."""

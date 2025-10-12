@@ -1,51 +1,89 @@
-"""Swedish Telegram templates with exact client requirements."""
+"""
+Swedish Telegram templates with exact client requirements.
+
+⚠️ IMPORTANT - CLIENT SPEC COMPLIANCE UPDATE:
+----------------------------------------
+The new app/telegram/engine.py provides a comprehensive template system
+that fully complies with CLIENT SPEC requirements:
+- Proper Bybit confirmation gates
+- Stockholm time formatting (HH:MM:SS)
+- Trade ID tracking
+- Hashtags (#btc, #btcusdt)
+- Bold labels with regular values
+- Exact 2-decimal formatting for USDT and leverage
+- NO pre-Bybit "waiting" messages (except signal_received)
+
+USAGE GUIDE:
+-----------
+For NEW code requiring Bybit-confirmed data (order_id, im_confirmed, etc.):
+    from app.telegram.engine import render_template
+    rendered = render_template("ORDER_PLACED", data)
+    await send_message(rendered["text"], **rendered)
+
+For BACKWARD COMPATIBILITY or simple messages:
+    from app.telegram.swedish_templates_v2 import get_swedish_templates
+    templates = get_swedish_templates()
+    message = templates.signal_received(data)
+    await send_message(message)
+
+This file (swedish_templates_v2.py) is maintained for backward compatibility
+and will gradually migrate to the new TemplateEngine.
+"""
 
 from typing import Dict, Any
 from decimal import Decimal
+from datetime import datetime
+from app.telegram.formatting import (
+    fmt_usdt, fmt_leverage, fmt_price, fmt_percent, fmt_quantity,
+    now_hms_stockholm, symbol_hashtags, ensure_trade_id
+)
 
 class SwedishTemplatesV2:
-    """Swedish templates with exact client requirements and Bybit confirmations."""
+    """
+    Swedish templates with exact client requirements and Bybit confirmations.
+    
+    ⚠️ NOTE: Consider using app/telegram/engine.py (TemplateEngine) instead
+    for full CLIENT SPEC compliance with proper validation and formatting.
+    """
     
     @staticmethod
     def signal_received(signal_data: Dict[str, Any]) -> str:
-        """Signal mottagen & kopierad template."""
+        """
+        Signal mottagen & kopierad template (UPDATED for CLIENT SPEC).
+        
+        CLIENT SPEC: This is the ONLY message allowed before Bybit confirmation.
+        All other messages must wait for Bybit confirmation.
+        """
         symbol = signal_data.get('symbol', '')
         direction = signal_data.get('direction', '')
         mode = signal_data.get('mode', '')
         channel_name = signal_data.get('channel_name', '')
         leverage = signal_data.get('leverage', 0)
+        trade_id = ensure_trade_id(signal_data.get('trade_id'))
         
-        # Format leverage with proper notation
-        leverage_str = f"x{int(leverage)}" if leverage == int(leverage) else f"x{leverage}"
+        # CLIENT SPEC: Use Stockholm time HH:MM:SS
+        t = now_hms_stockholm()
         
-        if mode == "SWING":
-            return f"""✅ Signal mottagen & kopierad
-🕒 Tid: {datetime.now().strftime('%H:%M:%S')}
-📢 Från kanal: {channel_name}
-📊 Symbol: {symbol}
-📈 Riktning: {direction}
-📍 Typ: Swing
+        # CLIENT SPEC: Leverage with 2 decimals
+        leverage_str = fmt_leverage(leverage)
+        
+        # CLIENT SPEC: Add hashtags
+        hashtags = symbol_hashtags(symbol)
+        
+        # CLIENT SPEC: NO "Väntar på Bybit bekräftelse" - that's forbidden
+        # CLIENT SPEC: NO "~20 USDT" - that must come from Bybit confirmation
+        
+        return f"""**🎯 Signal mottagen & kopierad**
 
-⚙️ Hävstång: {leverage_str}
-💰 IM: ~20 USDT
+📢 **Från kanal:** {channel_name}
+📊 **Symbol:** {symbol}
+📈 **Riktning:** {direction}
+📍 **Typ:** {mode}
+⚡️ **Hävstång:** {leverage_str}
+⏰ **Tid:** {t}
 
-⏳ Väntar på Bybit bekräftelse..."""
-        
-        elif mode == "FAST":
-            return f"""⏳ Väntar på Bybit bekräftelse
-📢 Från kanal: {channel_name}
-📊 Symbol: {symbol}
-📈 Riktning: {direction}
-🎯 Strategi: FAST {leverage_str}
-💰 IM: ~20 USDT"""
-        
-        else:  # DYNAMIC
-            return f"""⏳ Väntar på Bybit bekräftelse
-📢 Från kanal: {channel_name}
-📊 Symbol: {symbol}
-📈 Riktning: {direction}
-🎯 Strategi: DYNAMISK {leverage_str}
-💰 IM: ~20 USDT"""
+{hashtags}
+🆔 {trade_id}"""
     
     @staticmethod
     def hedge_activated(signal_data: Dict[str, Any]) -> str:
@@ -266,21 +304,29 @@ class SwedishTemplatesV2:
     
     @staticmethod
     def signal_blocked(signal_data: Dict[str, Any]) -> str:
-        """Signal blocked template."""
+        """
+        Signal blocked template (CLIENT SPEC: 2h block duration).
+        """
         symbol = signal_data.get('symbol', '')
         direction = signal_data.get('direction', '')
         channel_name = signal_data.get('channel_name', '')
         reason = signal_data.get('reason', '')
+        trade_id = ensure_trade_id(signal_data.get('trade_id'))
+        hashtags = symbol_hashtags(symbol)
         
-        return f"""🚫 SIGNAL BLOCKERAD
-📢 Från kanal: {channel_name}
-📊 Symbol: {symbol}
-📈 Riktning: {direction}
+        return f"""**🚫 SIGNAL BLOCKERAD**
 
-📍 Anledning: {reason}
-⏰ Blockad i 3 timmar (5% tolerans)
+📢 **Från kanal:** {channel_name}
+📊 **Symbol:** {symbol}
+📈 **Riktning:** {direction}
 
-ℹ️ Olika riktning eller >5% skillnad är OK"""
+📍 **Anledning:** {reason}
+⏰ **Blockad i 2 timmar** (5-10% heuristic)
+
+ℹ️ Olika riktning eller >10% skillnad är OK
+
+{hashtags}
+🆔 {trade_id}"""
     
     @staticmethod
     def breakeven_activated(signal_data: Dict[str, Any]) -> str:
@@ -387,6 +433,91 @@ class SwedishTemplatesV2:
 📊 Symbol: {symbol}
 
 ⏳ Försöker ny entry efter SL"""
+    
+    @staticmethod
+    def daily_report(report_data: Dict[str, Any]) -> str:
+        """
+        Daily report template.
+        
+        CLIENT SPEC: Daily summary at 08:00 Stockholm time.
+        """
+        from datetime import datetime
+        
+        date = report_data.get('date', datetime.now().strftime('%Y-%m-%d'))
+        total_trades = report_data.get('total_trades', 0)
+        winning_trades = report_data.get('winning_trades', 0)
+        losing_trades = report_data.get('losing_trades', 0)
+        total_pnl = report_data.get('total_pnl', 0)
+        win_rate = report_data.get('win_rate', 0)
+        
+        trades_by_symbol = report_data.get('trades_by_symbol', [])
+        
+        message = f"""📊 DAGLIG RAPPORT
+📅 Datum: {date}
+
+**📈 Sammanfattning:**
+Antal trades: {total_trades}
+Vinnande: {winning_trades}
+Förlorande: {losing_trades}
+Vinst %: {win_rate:.1f}%
+
+💰 Total PnL: {fmt_usdt(total_pnl)}
+
+**📊 Trades per symbol:**
+"""
+        
+        if trades_by_symbol:
+            for trade in trades_by_symbol[:10]:  # Top 10
+                symbol = trade.get('symbol', '')
+                pnl = trade.get('pnl', 0)
+                message += f"\n{symbol}: {fmt_usdt(pnl)}"
+        else:
+            message += "\nInga trades idag"
+        
+        return message
+    
+    @staticmethod
+    def weekly_report(report_data: Dict[str, Any]) -> str:
+        """
+        Weekly report template.
+        
+        CLIENT SPEC: Weekly summary on Saturday at 22:00 Stockholm time.
+        """
+        from datetime import datetime
+        
+        week = report_data.get('week', datetime.now().strftime('Vecka %W'))
+        total_trades = report_data.get('total_trades', 0)
+        winning_trades = report_data.get('winning_trades', 0)
+        losing_trades = report_data.get('losing_trades', 0)
+        total_pnl = report_data.get('total_pnl', 0)
+        win_rate = report_data.get('win_rate', 0)
+        
+        trades_by_symbol = report_data.get('trades_by_symbol', [])
+        top_performers = report_data.get('top_performers', [])
+        
+        message = f"""📊 VECKORAPPORT
+📅 {week}
+
+**📈 Sammanfattning:**
+Antal trades: {total_trades}
+Vinnande: {winning_trades}
+Förlorande: {losing_trades}
+Vinst %: {win_rate:.1f}%
+
+💰 Total PnL: {fmt_usdt(total_pnl)}
+
+**🏆 Topp Performers:**
+"""
+        
+        if top_performers:
+            for i, trade in enumerate(top_performers[:5], 1):
+                symbol = trade.get('symbol', '')
+                pnl = trade.get('pnl', 0)
+                message += f"\n{i}. {symbol}: {fmt_usdt(pnl)}"
+        else:
+            message += "\nInga trades denna vecka"
+        
+        return message
 
 # Global function to get templates instance
 def get_swedish_templates():

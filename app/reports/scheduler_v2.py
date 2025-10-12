@@ -64,18 +64,31 @@ class ReportSchedulerV2:
             system_logger.error(f"Error stopping report scheduler: {e}", exc_info=True)
     
     async def _send_daily_report(self):
-        """Send daily report."""
+        """
+        Send daily report (CLIENT SPEC: Main + Group reports).
+        
+        CLIENT SPEC: Send two reports:
+        1. Main daily report (statistics)
+        2. Group daily report (symbol-by-symbol breakdown)
+        """
         try:
             system_logger.info("Generating daily report")
             
-            # Generate daily report
+            # Generate main daily report
             report_data = await self.report_generator.generate_daily_report()
             
-            # Format and send report
+            # Format and send main report
             message = self._format_daily_report(report_data)
-            await send_message(message)
+            await send_message(message, template_name="daily_report_main")
             
-            system_logger.info("Daily report sent successfully")
+            system_logger.info("Main daily report sent successfully")
+            
+            # CLIENT SPEC: Generate and send group daily report
+            group_data = await self.report_generator.generate_group_daily()
+            group_message = self._format_group_daily_report(group_data)
+            await send_message(group_message, template_name="daily_report_group")
+            
+            system_logger.info("Group daily report sent successfully")
             
         except Exception as e:
             system_logger.error(f"Error sending daily report: {e}", exc_info=True)
@@ -128,6 +141,45 @@ class ReportSchedulerV2:
 • Parsing fel: {report_data.get('parsing_errors', 0)}
 
 🕐 Rapport genererad: {datetime.now(self.stockholm_tz).strftime("%H:%M:%S")} Stockholm tid"""
+    
+    def _format_group_daily_report(self, data: Dict[str, Any]) -> str:
+        """
+        Format group daily report (CLIENT SPEC).
+        
+        Shows symbol-by-symbol breakdown with %/USDT table.
+        """
+        date = datetime.now(self.stockholm_tz).strftime("%Y-%m-%d")
+        group_name = data.get("group_name", "ALL SOURCES")
+        
+        lines = [
+            f"📑 **DAGLIG RAPPORT FRÅN GRUPP: {group_name}**",
+            f"📅 Datum: {date}",
+            "",
+            "📊 **RESULTAT**",
+            "```",
+            f"{'Symbol':<12} {'%':>10}  {'USDT':>10}",
+            "-" * 34,
+        ]
+        
+        # Add each row
+        for row in data.get("rows", []):
+            symbol = row.get("symbol", "")[:12]
+            pct = row.get("pct", 0.0)
+            usdt = row.get("usdt", 0.0)
+            lines.append(f"{symbol:<12} {pct:>10.2f}  {usdt:>10.2f}")
+        
+        lines.append("-" * 34)
+        lines.append("```")
+        lines.append("")
+        lines.append(f"📈 **Antal signaler:** {data.get('count', 0)}")
+        lines.append(f"💹 **Totalt resultat:** {data.get('sum_usdt', 0):.2f} USDT")
+        lines.append(f"📊 **Vinst/Förlust:** {data.get('sum_pct', 0):.2f}%")
+        lines.append("")
+        lines.append("📍 **Fel:** Order ej öppnad inom tillåten tid (raderad enligt reglerna)")
+        lines.append("")
+        lines.append(f"🕐 Rapport genererad: {datetime.now(self.stockholm_tz).strftime('%H:%M:%S')} Stockholm tid")
+        
+        return "\n".join(lines)
     
     def _format_weekly_report(self, report_data: Dict[str, Any]) -> str:
         """Format weekly report message."""

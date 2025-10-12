@@ -171,6 +171,32 @@ async def main():
     print(f"Python {sys.version}")
     print(f"Platform: {sys.platform}")
     
+    # CRITICAL FIX: Clean up locked session files on startup
+    try:
+        import time
+        session_files = [
+            "bybit_copybot_session.session",
+            "bybit_copybot_session.session-journal"
+        ]
+        for file in session_files:
+            if os.path.exists(file):
+                # Check if file is locked by trying to rename it
+                try:
+                    temp_name = f"{file}.backup.{int(time.time())}"
+                    os.rename(file, temp_name)
+                    os.rename(temp_name, file)  # Rename back if successful
+                    print(f"✅ Session file OK: {file}")
+                except (OSError, PermissionError):
+                    # File is locked, remove it
+                    try:
+                        os.remove(file)
+                        print(f"✅ Removed locked session file: {file}")
+                    except Exception as remove_error:
+                        print(f"⚠️ Could not remove locked file: {file}")
+                        print(f"   Please delete manually and restart: {remove_error}")
+    except Exception as e:
+        print(f"⚠️ Session cleanup warning: {e}")
+    
     # Print configuration snapshot
     await _print_config_snapshot()
     

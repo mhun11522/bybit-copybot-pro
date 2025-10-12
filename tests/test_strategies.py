@@ -124,7 +124,8 @@ class TestHedgeStrategy:
     @pytest.fixture
     def hedge_strategy(self):
         """Create hedge strategy instance."""
-        return HedgeStrategyV2("TEST_TRADE", "MOVEUSDT", "BUY", "TEST_CHANNEL")
+        # HedgeStrategyV2 requires: trade_id, symbol, direction, original_entry, channel_name
+        return HedgeStrategyV2("TEST_TRADE", "MOVEUSDT", "BUY", Decimal("1.0"), "TEST_CHANNEL")
     
     @pytest.mark.asyncio
     async def test_hedge_activation(self, hedge_strategy):
@@ -150,7 +151,8 @@ class TestReentryStrategy:
     @pytest.fixture
     def reentry_strategy(self):
         """Create re-entry strategy instance."""
-        return ReentryStrategyV2("TEST_TRADE", "MOVEUSDT", "BUY", Decimal("1.0000"), "TEST_CHANNEL")
+        # ReentryStrategyV2 requires: trade_id, symbol, direction, channel_name (4 args)
+        return ReentryStrategyV2("TEST_TRADE", "MOVEUSDT", "BUY", "TEST_CHANNEL")
     
     @pytest.mark.asyncio
     async def test_reentry_attempt(self, reentry_strategy):
