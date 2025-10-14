@@ -60,6 +60,13 @@ class StructuredLogger:
             error_data["exception"] = traceback.format_exc()
         self._log("ERROR", message, error_data)
     
+    def critical(self, message: str, data: Dict[str, Any] = None, exc_info: bool = False):
+        """Log critical error message."""
+        error_data = data or {}
+        if exc_info:
+            error_data["exception"] = traceback.format_exc()
+        self._log("CRITICAL", message, error_data)
+    
     def debug(self, message: str, data: Dict[str, Any] = None):
         """Log debug message."""
         self._log("DEBUG", message, data)

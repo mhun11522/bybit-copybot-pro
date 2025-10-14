@@ -9,7 +9,8 @@ from app.core.signal_blocking import is_signal_blocked
 from app.core.confirmation_gate import get_confirmation_gate
 from app.core.strict_fsm import TradeFSM
 from app.core.logging import system_logger, telegram_logger
-from app.telegram.swedish_templates_v2 import get_swedish_templates
+# CLIENT FIX: Migrated to use engine.py instead of swedish_templates_v2
+from app.telegram.engine import render_template
 from app.telegram.output import send_message
 from datetime import datetime
 import asyncio
@@ -19,35 +20,38 @@ class StrictTelegramClient:
     """Strict compliance Telegram client with exact client requirements."""
     
     def __init__(self):
-        # Create SQLite session with WAL mode to prevent database locking
-        session = SQLiteSession(STRICT_CONFIG.telegram_session)
+        # AUDIT FIX: Create fresh session without WAL mode complications
+        # WAL mode was causing connection hangs
+        session_path = STRICT_CONFIG.telegram_session
         
-        # Enable WAL mode for better concurrent access (fixes database locking)
-        try:
-            session._conn.execute('PRAGMA journal_mode=WAL')
-            session._conn.execute('PRAGMA busy_timeout=10000')  # 10 second timeout
-            session._conn.commit()
-            system_logger.info("Telegram session configured with WAL mode (prevents locking)")
-        except Exception as e:
-            system_logger.warning(f"Could not enable WAL mode: {e} (will use default)")
+        system_logger.info(f"Creating Telegram client with session: {session_path}")
         
         self.client = TelegramClient(
-            session,
+            session_path,  # Use string path, let Telethon handle session
             STRICT_CONFIG.telegram_api_id,
             STRICT_CONFIG.telegram_api_hash
         )
         self.parser = get_strict_parser()
-        self.templates = get_swedish_templates()
+        # CLIENT FIX: Removed self.templates - using render_template() instead
         self.confirmation_gate = get_confirmation_gate()
         self.active_trades = {}  # Track active trades
         self.setup_handlers()
     
     def setup_handlers(self):
         """Setup event handlers."""
+        # Register handler directly - decorator in method can be problematic
+        self.client.add_event_handler(
+            self._handle_message,
+            events.NewMessage()
+        )
+        system_logger.info("Message handler registered for all new messages")
         
-        @self.client.on(events.NewMessage)
-        async def handle_new_message(event):
-            await self._handle_message(event)
+        # Add test handler to verify events are being received AT ALL
+        @self.client.on(events.Raw)
+        async def raw_handler(update):
+            system_logger.debug(f"🔔 RAW EVENT RECEIVED: {type(update).__name__}")
+        
+        system_logger.info("🧪 Debug: Raw event handler also registered")
     
     async def _handle_message(self, event):
         """Handle incoming Telegram messages with strict compliance."""
@@ -127,6 +131,10 @@ class StrictTelegramClient:
             # Get channel name for logging
             channel_name = STRICT_CONFIG.get_channel_name(channel_id)
             
+            # DEBUG: Log test channel checks
+            if channel_id == "-1003027029201":
+                system_logger.info(f"🧪 TEST CHANNEL CHECK: allowed={allowed}, name={channel_name}, whitelist_size={len(STRICT_CONFIG.source_whitelist)}")
+            
             return allowed, channel_name
             
         except Exception as e:
@@ -134,14 +142,63 @@ class StrictTelegramClient:
             return False, "unknown"
     
     async def _send_signal_received(self, signal_data: dict):
-        """Send signal received message using Swedish template."""
+        """Send signal received message using Engine."""
         try:
-            message = self.templates.signal_received(signal_data)
-            await send_message(message)
+            # CLIENT FIX: Pass ALL signal data including TP/SL (Phase 4 integration)
+            from decimal import Decimal, InvalidOperation
+            
+            # Helper function to normalize Swedish format for Decimal conversion
+            def to_decimal_safe(value):
+                """Convert value to Decimal, handling Swedish number format (comma as decimal separator)."""
+                if value is None or value == "" or value == 0:
+                    return None
+                if isinstance(value, Decimal):
+                    return value
+                try:
+                    # Normalize: replace comma with dot for Swedish format
+                    val_str = str(value).replace(",", ".")
+                    return Decimal(val_str)
+                except (ValueError, InvalidOperation):
+                    return None
+            
+            # Prepare complete data for new template format
+            entry_val = signal_data.get('entry', signal_data.get('entries', [0])[0] if signal_data.get('entries') else 0)
+            
+            template_data = {
+                'symbol': signal_data['symbol'],
+                'source_name': signal_data['channel_name'],
+                'side': signal_data.get('side', signal_data.get('direction', 'LONG')),
+                'trade_id': signal_data.get('trade_id', ''),
+                # Entry and TP/SL data (from signal) - using safe conversion
+                'entry': to_decimal_safe(entry_val),
+                'tp1': to_decimal_safe(signal_data['tps'][0]) if signal_data.get('tps') and len(signal_data['tps']) > 0 else None,
+                'tp2': to_decimal_safe(signal_data['tps'][1]) if signal_data.get('tps') and len(signal_data['tps']) > 1 else None,
+                'tp3': to_decimal_safe(signal_data['tps'][2]) if signal_data.get('tps') and len(signal_data['tps']) > 2 else None,
+                'tp4': to_decimal_safe(signal_data['tps'][3]) if signal_data.get('tps') and len(signal_data['tps']) > 3 else None,
+                'sl': to_decimal_safe(signal_data.get('sl')),
+                # Leverage (calculated by bot initially, will be updated from Bybit later)
+                'leverage': to_decimal_safe(signal_data.get('leverage', 6.00)) or Decimal("6.00"),
+                # IM (estimated initially)
+                'im': to_decimal_safe(signal_data.get('im', 20.00)) or Decimal("20.00"),
+                # Order IDs (empty initially)
+                'bot_order_id': '',
+                'bybit_order_id': ''
+            }
+            
+            rendered = render_template("SIGNAL_RECEIVED", template_data)
+            
+            # Send with metadata
+            await send_message(
+                rendered["text"],
+                template_name=rendered["template_name"],
+                trade_id=rendered["trade_id"],
+                symbol=rendered["symbol"],
+                hashtags=rendered["hashtags"]
+            )
             
             system_logger.info("Signal received message sent", {
                 'symbol': signal_data['symbol'],
-                'mode': signal_data['mode'],
+                'mode': signal_data.get('mode', 'N/A'),
                 'channel': signal_data['channel_name']
             })
             
@@ -208,19 +265,27 @@ class StrictTelegramClient:
             await self._send_error_message(fsm.signal_data, str(e))
     
     async def _send_error_message(self, signal_data: dict, error_message: str):
-        """Send error message using Swedish template."""
+        """Send error message using Engine."""
         try:
             # Parse specific error types for better user understanding
             error_type, specific_message = self._parse_error_message(error_message)
             
-            error_data = {
+            # CLIENT FIX: Use Engine for error messages
+            rendered = render_template("ERROR_MESSAGE", {
                 'symbol': signal_data['symbol'],
-                'error_type': error_type,
-                'error_message': specific_message
-            }
+                'error': specific_message,
+                'source_name': signal_data.get('channel_name', 'Unknown'),
+                'trade_id': signal_data.get('trade_id', '')
+            })
             
-            message = self.templates.error_occurred(error_data)
-            await send_message(message)
+            # Send with metadata
+            await send_message(
+                rendered["text"],
+                template_name=rendered["template_name"],
+                trade_id=rendered["trade_id"],
+                symbol=rendered["symbol"],
+                hashtags=rendered["hashtags"]
+            )
             
         except Exception as e:
             system_logger.error(f"Error sending error message: {e}", exc_info=True)
@@ -278,10 +343,43 @@ class StrictTelegramClient:
     async def start(self):
         """Start the strict Telegram client."""
         try:
-            await self.client.start()
+            # CRITICAL FIX: client.start() hangs waiting for user input
+            # Use connect() for authenticated sessions to avoid interactive prompts
+            system_logger.info("🔌 TELEGRAM: Connecting with authenticated session...")
+            print("🔌 Connecting Telegram client...")
+            
+            # First connect
+            await self.client.connect()
+            system_logger.info("✅ TELEGRAM: Connected")
+            print("✅ Connected")
+            
+            # Check if authorized
+            is_auth = await self.client.is_user_authorized()
+            system_logger.info(f"🔑 TELEGRAM: Authorization status: {is_auth}")
+            print(f"🔑 Authorization: {is_auth}")
+            
+            if not is_auth:
+                system_logger.error("❌ TELEGRAM: Session not authorized! Run: python authenticate_telegram.py")
+                print("❌ Session not authorized! Run: python authenticate_telegram.py")
+                raise RuntimeError("Telegram session not authorized - run authenticate_telegram.py first")
+            
+            # Verify connection status
+            is_connected = self.client.is_connected()
+            system_logger.info(f"🔍 TELEGRAM: Connection status: {is_connected}")
+            print(f"🔍 Connection status: {is_connected}")
+            
+            system_logger.info("👤 TELEGRAM: Fetching user info...")
+            print("👤 Getting user info...")
+            
+            me = await self.client.get_me()
+            system_logger.info(f"✅ TELEGRAM: Logged in as {me.first_name} (ID: {me.id})")
+            print(f"✅ Logged in as {me.first_name}")
+            
             system_logger.info("Strict Telegram client started", {
                 'session': STRICT_CONFIG.telegram_session,
-                'api_id': STRICT_CONFIG.telegram_api_id
+                'api_id': STRICT_CONFIG.telegram_api_id,
+                'user_id': me.id,
+                'user_name': me.first_name
             })
             print("[OK] Strict Telegram client started")
             
@@ -316,19 +414,40 @@ class StrictTelegramClient:
             system_logger.error(f"Error stopping Telegram client: {e}", exc_info=True)
     
     async def _send_signal_blocked(self, signal_data: dict, block_reason: str):
-        """Send signal blocked message."""
+        """
+        Send signal blocked message.
+        
+        CLIENT FIX (DEEP_ANALYSIS): Use template engine instead of direct f-string.
+        CLIENT SPEC: doc/10_12_3.md Lines 2521-2526
+        """
         try:
-            message = f"""🚫 SIGNAL BLOCKERAD
-📢 Från kanal: {signal_data.get('channel_name', '')}
-📊 Symbol: {signal_data.get('symbol', '')}
-📈 Riktning: {signal_data.get('direction', '')}
-
-📍 Anledning: {block_reason}
-⏰ Blockad i 3 timmar (5% tolerans)
-
-ℹ️ Olika riktning eller >5% skillnad är OK"""
+            from app.telegram.engine import render_template
+            from app.telegram.output import send_message
+            import re
             
-            await send_message(message)
+            # Extract diff percentage from block_reason if available
+            # Format: "Blocked (≤5% diff: 1.51%, 2h window)"
+            diff_match = re.search(r'(\d+\.?\d*)%', block_reason)
+            diff_pct = diff_match.group(1) if diff_match else "0"
+            
+            # Use template engine (CLIENT SPEC compliance)
+            rendered = render_template("SIGNAL_BLOCKED", {
+                'symbol': signal_data.get('symbol', ''),
+                'source_name': signal_data.get('channel_name', 'Unknown'),
+                'side': signal_data.get('direction', 'UNKNOWN'),
+                'reason': block_reason,
+                'diff_pct': diff_pct,
+                'trade_id': signal_data.get('trade_id', '')
+            })
+            
+            # Send with full metadata
+            await send_message(
+                rendered["text"],
+                template_name=rendered["template_name"],
+                trade_id=rendered["trade_id"],
+                symbol=rendered["symbol"],
+                hashtags=rendered["hashtags"]
+            )
             
         except Exception as e:
             system_logger.error(f"Error sending signal blocked message: {e}", exc_info=True)

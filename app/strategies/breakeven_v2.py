@@ -5,7 +5,8 @@ from typing import Dict, Any
 from app.bybit.client import BybitClient
 from app.core.logging import system_logger
 from app.telegram.output import send_message
-from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
+from app.telegram.engine import render_template
+from app.core.confirmation_gate import ConfirmationGate
 
 class BreakevenStrategyV2:
     """Breakeven strategy: Move SL to BE at TP2 (+0.0015%)."""
@@ -18,7 +19,14 @@ class BreakevenStrategyV2:
         from app.bybit.client import get_bybit_client
         self.bybit = get_bybit_client()
         self.activated = False
-        self.trigger_pct = Decimal("2.3")  # CLIENT SPEC: +2.3% → SL to breakeven + costs
+        
+        # CLIENT FIX (COMPLIANCE doc/10_12_2.md Lines 297-302):
+        # Read from STRICT_CONFIG instead of hardcoding
+        from app.core.strict_config import STRICT_CONFIG
+        # CLIENT SPEC: +2.3% → SL to breakeven (from pyramid step 2)
+        # Use pyramid level 2's trigger (2.3%) for breakeven activation
+        self.trigger_pct = STRICT_CONFIG.pyramid_levels[1]["trigger"]  # Step 2: 2.3%
+        self.offset_pct = STRICT_CONFIG.breakeven_offset  # 0.0015% offset for costs
     
     async def check_and_activate(self, current_price: Decimal, avg_entry: Decimal) -> bool:
         """Check if breakeven should be activated and activate it."""
@@ -41,11 +49,16 @@ class BreakevenStrategyV2:
     async def _activate_breakeven(self, current_price: Decimal, gain_pct: Decimal):
         """Activate breakeven by moving SL to breakeven + costs."""
         try:
-            # Calculate breakeven price + small buffer for costs
+            # CLIENT FIX: Use configured offset_pct instead of hardcoded 0.1%
+            # Calculate breakeven price + configured buffer for costs
+            offset_multiplier = Decimal("1") + (self.offset_pct / Decimal("100"))
+            
             if self.direction == "BUY":
-                be_price = current_price * Decimal("0.999")  # 0.1% below current
+                # For BUY: BE is slightly below avg_entry (offset_pct %)
+                be_price = current_price * (Decimal("1") - (self.offset_pct / Decimal("100")))
             else:  # SELL
-                be_price = current_price * Decimal("1.001")  # 0.1% above current
+                # For SELL: BE is slightly above avg_entry (offset_pct %)
+                be_price = current_price * offset_multiplier
             
             # Place new SL order at breakeven
             order_body = {
@@ -64,17 +77,58 @@ class BreakevenStrategyV2:
             result = await self.bybit.place_order(order_body)
             
             if result.get('retCode') == 0:
+                # CLIENT FIX (DEEP_ANALYSIS): Verify Bybit confirmed the SL move
+                verification = await self.bybit.get_position("linear", self.symbol)
+                
+                if verification.get('retCode') != 0:
+                    system_logger.error(
+                        f"Breakeven SL placed but Bybit verification failed",
+                        {
+                            "symbol": self.symbol,
+                            "retCode": verification.get('retCode'),
+                            "retMsg": verification.get('retMsg')
+                        }
+                    )
+                    return False  # ❌ Do NOT send Telegram
+                
+                # ✅ Bybit confirmed - proceed
                 self.activated = True
                 system_logger.info(f"Breakeven activated for {self.symbol} at +{gain_pct:.2f}%")
                 
-                # Send notification
-                signal_data = {
+                # Fetch exact IM from Bybit using singleton pattern
+                from app.core.confirmation_gate import get_confirmation_gate
+                gate = get_confirmation_gate()
+                im_confirmed = await gate._fetch_confirmed_im(self.symbol)
+                
+                # Get avg_price and leverage from position (FROM BYBIT!)
+                pos = await self.bybit.positions("linear", self.symbol)
+                avg_price = current_price  # Fallback
+                current_leverage = Decimal("6.00")  # Fallback
+                if pos.get("result", {}).get("list"):
+                    position = pos["result"]["list"][0]
+                    avg_price = Decimal(str(position.get("avgPrice", str(current_price))))
+                    current_leverage = Decimal(str(position.get("leverage", "6.00")))
+                
+                # PRIORITY 2: Use Engine queue instead of direct send_message
+                from app.telegram.engine import get_template_engine
+                engine = get_template_engine()
+                
+                # Prepare data for template
+                template_data = {
                     'symbol': self.symbol,
-                    'channel_name': self.channel_name,
-                    'gain_pct': f"{gain_pct:.2f}"
+                    'source_name': self.channel_name,
+                    'side': self.direction,
+                    'leverage': current_leverage,  # FROM BYBIT!
+                    'sl': getattr(self, 'sl', None),  # For type detection
+                    'new_sl': be_price,
+                    'entry_price': avg_price,
+                    'trade_id': self.trade_id,
+                    'bot_order_id': f"BOT-{self.trade_id}",
+                    'bybit_order_id': ''
                 }
-                message = SwedishTemplatesV2.breakeven_activated(signal_data)
-                await send_message(message)
+                
+                # Enqueue through Engine (includes rate limiting & retry)
+                await engine.enqueue_and_send("BREAKEVEN_MOVED", template_data, priority=4)
                 return True
                 
             else:

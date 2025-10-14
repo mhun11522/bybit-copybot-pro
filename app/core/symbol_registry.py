@@ -146,6 +146,16 @@ class SymbolRegistry:
         info = await self.get_symbol_info(symbol)
         return info is not None and info.is_trading
     
+    async def get_all_symbols(self) -> List[str]:
+        """Get list of all available trading symbols."""
+        await self.update_symbols()
+        return [symbol for symbol, info in self._symbols.items() if info.is_trading]
+    
+    async def refresh_symbols(self):
+        """Force refresh symbol cache."""
+        self._last_update = None
+        await self.update_symbols()
+    
     async def quantize_price(self, symbol: str, price: Decimal) -> Optional[Decimal]:
         """Quantize price for symbol."""
         info = await self.get_symbol_info(symbol)

@@ -5,7 +5,8 @@ from typing import Dict, Any, Optional
 from app.bybit.client import BybitClient
 from app.core.logging import system_logger
 from app.telegram.output import send_message
-from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
+from app.telegram.engine import render_template
+from app.core.confirmation_gate import ConfirmationGate
 
 class HedgeStrategyV2:
     """Hedge strategy: Opens reverse position at -2% adverse move."""
@@ -19,7 +20,12 @@ class HedgeStrategyV2:
         from app.bybit.client import get_bybit_client
         self.bybit = get_bybit_client()
         self.activated = False
-        self.trigger_pct = Decimal("2.0")  # -2% trigger
+        
+        # CLIENT FIX (COMPLIANCE doc/10_12_2.md Lines 309-313):
+        # Read from STRICT_CONFIG instead of hardcoding
+        from app.core.strict_config import STRICT_CONFIG
+        self.trigger_pct = abs(STRICT_CONFIG.hedge_trigger)  # -2% trigger (stored as -2.0, use abs)
+        
         self.hedge_size: Optional[Decimal] = None
         self.retry_count = 0
         self.max_retries = 3  # Maximum retry attempts for hedge activation
@@ -132,15 +138,42 @@ class HedgeStrategyV2:
                 self.activated = True
                 system_logger.info(f"Hedge activated for {self.symbol} at -{loss_pct:.2f}%")
                 
-                # Send notification
-                signal_data = {
-                    'symbol': self.symbol,
-                    'channel_name': self.channel_name,
-                    'loss_pct': f"{loss_pct:.2f}"
-                }
-                message = SwedishTemplatesV2.hedge_activated(signal_data)
-                await send_message(message)
+                # CLIENT FIX: Send notification via Engine after Bybit confirmation
+                # Fetch exact IM from Bybit using singleton pattern
+                from app.core.confirmation_gate import get_confirmation_gate
+                gate = get_confirmation_gate()
+                im_confirmed = await gate._fetch_confirmed_im(self.symbol)
                 
+                # Get leverage from position (FROM BYBIT!)
+                pos = await self.bybit.positions("linear", self.symbol)
+                current_leverage = Decimal("6.00")  # Fallback
+                if pos.get("result", {}).get("list"):
+                    current_leverage = Decimal(str(pos["result"]["list"][0].get("leverage", "6.00")))
+                
+                # Calculate hedge details
+                hedge_side = "SHORT" if self.direction == "BUY" else "LONG"
+                
+                # PRIORITY 2: Use Engine queue instead of direct send_message
+                from app.telegram.engine import get_template_engine
+                engine = get_template_engine()
+                
+                # Prepare data for template
+                template_data = {
+                    'symbol': self.symbol,
+                    'source_name': self.channel_name,
+                    'side': self.direction,  # Original side
+                    'leverage': current_leverage,  # FROM BYBIT!
+                    'sl': getattr(self, 'sl', None),  # For type detection
+                    'price': current_price,
+                    'qty': self.hedge_size,
+                    'im': im_confirmed,  # Hedge IM
+                    'trade_id': self.trade_id,
+                    'bot_order_id': f"BOT-{self.trade_id}-HEDGE",
+                    'bybit_order_id': ''
+                }
+                
+                # Enqueue through Engine (includes rate limiting & retry)
+                await engine.enqueue_and_send("HEDGE_STARTED", template_data, priority=2)
             else:
                 # Handle specific error codes
                 error_code = result.get('retCode')

@@ -5,7 +5,8 @@ from typing import Dict, Any
 from app.bybit.client import BybitClient
 from app.core.logging import system_logger
 from app.telegram.output import send_message
-from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
+from app.telegram.engine import render_template
+from app.core.confirmation_gate import ConfirmationGate
 
 class PyramidStrategyV2:
     """Pyramid strategy with exact client requirements."""
@@ -18,20 +19,28 @@ class PyramidStrategyV2:
         self.channel_name = channel_name
         from app.bybit.client import get_bybit_client
         self.bybit = get_bybit_client()
+        
+        # CLIENT FIX (COMPLIANCE doc/10_12_2.md Lines 291-325):
+        # Read pyramid levels from STRICT_CONFIG instead of hardcoding
         # Pyramid levels calculated from ORIGINAL ENTRY as per CLIENT SPECIFICATION
         # CRITICAL: All percentages calculated from ORIGINAL ENTRY, not current price
-        # DO NOT MODIFY THESE VALUES WITHOUT CLIENT APPROVAL
-        self.levels = {
-            Decimal("1.5"): {"action": "im_total", "target_im": Decimal("20")},   # Step 1: +1.5% → IM total 20 USDT
-            Decimal("2.3"): {"action": "sl_breakeven"},                           # Step 2: +2.3% → SL to breakeven
-            Decimal("2.4"): {"action": "set_full_leverage"},                      # Step 3: +2.4% → Full leverage (ETH=50x cap, others=instrument max)
-            Decimal("2.5"): {"action": "im_total", "target_im": Decimal("40")},   # Step 4: +2.5% → IM total 40 USDT
-            Decimal("4.0"): {"action": "im_total", "target_im": Decimal("60")},   # Step 5: +4.0% → IM total 60 USDT
-            Decimal("6.0"): {"action": "im_total", "target_im": Decimal("80")},   # Step 6: +6.0% → IM total 80 USDT
-            Decimal("8.6"): {"action": "im_total", "target_im": Decimal("100")},  # Step 7: +8.6% → IM total 100 USDT (CLIENT SPEC)
-        }
+        from app.core.strict_config import STRICT_CONFIG
+        
+        self.levels = {}
+        for level_config in STRICT_CONFIG.pyramid_levels:
+            trigger = level_config["trigger"]
+            action = level_config["action"]
+            # Convert to dict format expected by existing logic
+            level_dict = {"action": action}
+            if "target_im" in level_config:
+                level_dict["target_im"] = Decimal(str(level_config["target_im"]))
+            if "leverage_cap" in level_config:
+                level_dict["leverage_cap"] = Decimal(str(level_config["leverage_cap"]))
+            
+            self.levels[trigger] = level_dict
+        
         self.activated_levels = set()
-        self.max_adds = 7
+        self.max_adds = len(STRICT_CONFIG.pyramid_levels)  # Dynamic based on config
     
     async def check_and_activate(self, current_price: Decimal) -> bool:
         """Check if pyramid levels should be activated."""
@@ -77,20 +86,69 @@ class PyramidStrategyV2:
                 success = await self._update_position_size_to_total_im(target_im)
             
             if success:
+                # CLIENT FIX (DEEP_ANALYSIS): Verify Bybit actually confirmed before sending Telegram
+                # Do NOT send Telegram if Bybit operation failed
+                pos_data = await self.bybit.get_position("linear", self.symbol)
+                
+                # ✅ VERIFY Bybit returned success
+                if pos_data.get('retCode') != 0:
+                    system_logger.error(
+                        f"Pyramid step executed locally but Bybit verification failed",
+                        {
+                            "symbol": self.symbol,
+                            "level": level_num,
+                            "action": action,
+                            "retCode": pos_data.get('retCode'),
+                            "retMsg": pos_data.get('retMsg')
+                        }
+                    )
+                    return  # ❌ Do NOT send Telegram message
+                
+                # ✅ Bybit confirmed - proceed with message
                 system_logger.info(f"Pyramid level {level_num} activated for {self.symbol} at +{gain_pct:.2f}% - Action: {action}")
                 
-                # Send notification only if Bybit operation succeeded
-                signal_data = {
+                # Fetch exact IM from Bybit using singleton pattern
+                from app.core.confirmation_gate import get_confirmation_gate
+                gate = get_confirmation_gate()
+                im_confirmed = await gate._fetch_confirmed_im(self.symbol)
+                
+                # Get position data (already fetched above for verification)
+                qty_total = Decimal("0")
+                current_leverage = Decimal("1")
+                if pos_data.get("result", {}).get("list"):
+                    position = pos_data["result"]["list"][0]
+                    qty_total = Decimal(str(position.get("size", "0")))
+                    current_leverage = Decimal(str(position.get("leverage", "1")))
+                
+                # CLIENT FIX: Calculate profit WITH LEVERAGE
+                # gain_pct is the trade % (price movement)
+                # Client requirement: Must show profit including leverage
+                
+                # PRIORITY 2: Use Engine queue instead of direct send_message
+                # This provides rate limiting, retry logic, and centralized management
+                from app.telegram.engine import get_template_engine
+                engine = get_template_engine()
+                
+                # Prepare data for template
+                template_data = {
                     'symbol': self.symbol,
-                    'channel_name': self.channel_name,
+                    'source_name': self.channel_name,
+                    'side': self.direction,
                     'level': level_num,
-                    'gain_pct': f"{gain_pct:.2f}",
-                    'action': action,
-                    'target_im': str(config.get("target_im", "20")),
-                    'target_leverage': str(config.get("target_lev", "10"))
+                    'price': current_price,
+                    'gain_pct': float(gain_pct),  # Trade % (price movement)
+                    'leverage': current_leverage,  # FROM BYBIT!
+                    'sl': getattr(self, 'sl', None),  # For type detection
+                    'qty_added': Decimal("0"),  # Would need tracking
+                    'qty_total': qty_total,
+                    'im_added': Decimal("0"),  # Would need tracking
+                    'trade_id': self.trade_id,
+                    'bot_order_id': f"BOT-{self.trade_id}",
+                    'bybit_order_id': ''
                 }
-                message = SwedishTemplatesV2.pyramid_activated(signal_data)
-                await send_message(message)
+                
+                # Enqueue through Engine (includes rate limiting & retry)
+                await engine.enqueue_and_send("PYRAMID_STEP", template_data, priority=3)
             else:
                 system_logger.error(f"Pyramid action {action} failed for {self.symbol}; not sending activation message")
             

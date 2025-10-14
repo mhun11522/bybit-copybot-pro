@@ -236,13 +236,19 @@ class TradeFSM:
                 else:
                     processed_entries.append(Decimal(e))
             
+            # Extract TPs and SL for template data
+            tps = self.signal_data.get('tps', [])
+            sl = self.signal_data.get('sl')
+            
             success = await gate.place_entry_orders(
                 self.signal_data['symbol'],
                 self.signal_data['direction'],
                 processed_entries,
                 self.position_size,
                 Decimal(str(self.signal_data['leverage'])),
-                self.signal_data['channel_name']
+                self.signal_data['channel_name'],
+                tps=tps,
+                sl=sl
             )
             
             if success:
@@ -345,7 +351,8 @@ class TradeFSM:
                 self.position_size,
                 tp_decimals,
                 sl_decimal,
-                self.signal_data['channel_name']
+                self.signal_data['channel_name'],
+                entry_price=self.entry_price  # Pass actual entry price from position
             )
             
             if success:

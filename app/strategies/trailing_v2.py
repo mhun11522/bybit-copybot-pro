@@ -5,7 +5,8 @@ from typing import Dict, Any, Optional
 from app.bybit.client import BybitClient
 from app.core.logging import system_logger
 from app.telegram.output import send_message
-from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
+from app.telegram.engine import render_template
+from app.core.confirmation_gate import ConfirmationGate
 
 class TrailingStopStrategyV2:
     """Trailing stop strategy: Activates at +6.1%, SL 2.5% behind highest/lowest price."""
@@ -18,8 +19,13 @@ class TrailingStopStrategyV2:
         from app.bybit.client import get_bybit_client
         self.bybit = get_bybit_client()
         self.armed = False
-        self.trigger_pct = Decimal("6.1")  # 6.1% trigger
-        self.trail_distance = Decimal("2.5")  # 2.5% behind price
+        
+        # CLIENT FIX (COMPLIANCE doc/10_12_2.md Lines 303-308):
+        # Read from STRICT_CONFIG instead of hardcoding
+        from app.core.strict_config import STRICT_CONFIG
+        self.trigger_pct = STRICT_CONFIG.trailing_trigger  # 6.1% trigger (CLIENT SPEC)
+        self.trail_distance = STRICT_CONFIG.trailing_distance  # 2.5% behind price (CLIENT SPEC)
+        
         self.highest_price: Optional[Decimal] = None
         self.lowest_price: Optional[Decimal] = None
         self.current_sl: Optional[Decimal] = None
@@ -63,16 +69,70 @@ class TrailingStopStrategyV2:
             
             await self._place_trailing_sl(initial_sl)
             
+            # CLIENT FIX (DEEP_ANALYSIS): Verify Bybit confirmed the trailing SL
+            verification = await self.bybit.get_position("linear", self.symbol)
+            
+            if verification.get('retCode') != 0:
+                system_logger.error(
+                    f"Trailing SL placed but Bybit verification failed",
+                    {
+                        "symbol": self.symbol,
+                        "retCode": verification.get('retCode'),
+                        "retMsg": verification.get('retMsg')
+                    }
+                )
+                return  # ❌ Do NOT send Telegram
+            
+            # ✅ Bybit confirmed - proceed
             system_logger.info(f"Trailing stop armed for {self.symbol} at +{gain_pct:.2f}%")
             
-            # Send notification
-            signal_data = {
+            # Fetch exact IM from Bybit using singleton pattern
+            from app.core.confirmation_gate import get_confirmation_gate
+            gate = get_confirmation_gate()
+            im_confirmed = await gate._fetch_confirmed_im(self.symbol)
+            
+            # Get current leverage for profit calculation
+            pos = await self.bybit.positions("linear", self.symbol)
+            current_leverage = Decimal("1")
+            if pos.get("result", {}).get("list"):
+                current_leverage = Decimal(str(pos["result"]["list"][0].get("leverage", "1")))
+            
+            # CLIENT FIX: Calculate PnL WITH LEVERAGE
+            # gain_pct is trade % (price movement)
+            # Client requirement: Must multiply by leverage
+            pnl_pct_leveraged = gain_pct * current_leverage  # WITH LEVERAGE!
+            pnl_usdt = im_confirmed * (pnl_pct_leveraged / Decimal("100"))  # Estimated
+            
+            # Calculate new SL based on trail distance
+            if self.direction == "BUY":
+                new_sl = current_price * (Decimal("1") - (self.trail_distance / Decimal("100")))
+            else:
+                new_sl = current_price * (Decimal("1") + (self.trail_distance / Decimal("100")))
+            
+            # PRIORITY 2: Use Engine queue instead of direct send_message
+            from app.telegram.engine import get_template_engine
+            engine = get_template_engine()
+            
+            # Prepare data for template
+            template_data = {
                 'symbol': self.symbol,
-                'channel_name': self.channel_name,
-                'gain_pct': f"{gain_pct:.2f}"
+                'source_name': self.channel_name,
+                'side': self.direction,
+                'leverage': current_leverage,  # FROM BYBIT!
+                'sl': getattr(self, 'sl', None),  # For type detection
+                'trigger_pct': float(gain_pct),
+                'trail_dist_pct': float(self.trail_distance),
+                'new_extreme': current_price,
+                'new_sl': new_sl,
+                'pnl_pct': float(pnl_pct_leveraged),  # WITH LEVERAGE!
+                'pnl_usdt': pnl_usdt,
+                'trade_id': self.trade_id,
+                'bot_order_id': f"BOT-{self.trade_id}",
+                'bybit_order_id': ''
             }
-            message = SwedishTemplatesV2.trailing_stop_activated(signal_data)
-            await send_message(message)
+            
+            # Enqueue through Engine (includes rate limiting & retry)
+            await engine.enqueue_and_send("TRAILING_ACTIVATED", template_data, priority=3)
             
         except Exception as e:
             system_logger.error(f"Trailing stop arming error: {e}", exc_info=True)

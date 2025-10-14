@@ -1,4 +1,29 @@
 """
+DEPRECATED - DO NOT USE
+
+CLIENT FIX (COMPLIANCE doc/10_12_2.md Lines 447-460):
+This legacy template system is DEPRECATED per client requirements.
+
+⚠️ HARD DISABLED - This module will raise RuntimeError on import ⚠️
+
+All Telegram messages MUST use the unified TemplateEngine instead:
+    from app.telegram.engine import render_template
+    rendered = render_template("ORDER_PLACED", data)
+
+See COMPLIANCE_ANALYSIS.md section 10.2 point 5 for details.
+"""
+
+# CLIENT SPEC: Hard-disable legacy templates to prevent accidental use
+raise RuntimeError(
+    "❌ DEPRECATED: swedish_templates_v2.py is disabled per client requirements (doc/10_12_2.md Lines 447-460). "
+    "Use app.telegram.engine.TemplateEngine instead. "
+    "See COMPLIANCE_ANALYSIS.md section 10.2 point 5."
+)
+
+# Code below is preserved for reference but will never execute due to RuntimeError above
+# ==================================================================================
+
+"""
 Swedish Telegram templates with exact client requirements.
 
 ⚠️ IMPORTANT - CLIENT SPEC COMPLIANCE UPDATE:
@@ -38,21 +63,51 @@ from app.telegram.formatting import (
     now_hms_stockholm, symbol_hashtags, ensure_trade_id
 )
 
+# ============================================================================
+# PRODUCTION LOCK - DO NOT USE THIS FILE
+# ============================================================================
+# CLIENT REQUIREMENT: All Telegram messages MUST go through single path:
+#   ConfirmationGate → Engine → Output
+#
+# This file is DEPRECATED and contains forbidden patterns:
+#   ❌ "Waiting for Bybit confirmation…"
+#   ❌ "IM: ~20 USDT" (approximate values)
+#   ❌ Messages sent before Bybit retCode=0
+#
+# REQUIRED: Use app/telegram/engine.py instead
+# ============================================================================
+
+import os
+_IS_PRODUCTION = os.getenv("ENV", "PROD") == "PROD"
+
+if _IS_PRODUCTION:
+    raise RuntimeError(
+        "DEPRECATED: swedish_templates_v2.py is forbidden in production. "
+        "Use app/telegram/engine.py instead. "
+        "See doc/10_12_requirement.txt for details."
+    )
+
 class SwedishTemplatesV2:
     """
-    Swedish templates with exact client requirements and Bybit confirmations.
+    Swedish templates - DEPRECATED.
     
-    ⚠️ NOTE: Consider using app/telegram/engine.py (TemplateEngine) instead
-    for full CLIENT SPEC compliance with proper validation and formatting.
+    ⚠️ DEPRECATED: Use app/telegram/engine.py (TemplateEngine) instead.
+    CLIENT SPEC Line 33: Each function raises RuntimeError to prevent usage.
+    
+    This class is kept for reference only. All functions raise RuntimeError.
     """
     
     @staticmethod
     def signal_received(signal_data: Dict[str, Any]) -> str:
+        # CLIENT SPEC Line 33: Each function must raise RuntimeError
+        raise RuntimeError("DEPRECATED: Use app/telegram/engine.render_template('SIGNAL_RECEIVED', data)")
         """
         Signal mottagen & kopierad template (UPDATED for CLIENT SPEC).
         
         CLIENT SPEC: This is the ONLY message allowed before Bybit confirmation.
         All other messages must wait for Bybit confirmation.
+        
+        DEPRECATED: Use app/telegram/engine.render_template() instead.
         """
         symbol = signal_data.get('symbol', '')
         direction = signal_data.get('direction', '')
@@ -87,7 +142,9 @@ class SwedishTemplatesV2:
     
     @staticmethod
     def hedge_activated(signal_data: Dict[str, Any]) -> str:
-        """Hedge activated template."""
+        """DEPRECATED: Use engine.render_template('HEDGE_STARTED', data)"""
+        raise RuntimeError("DEPRECATED: Use app/telegram/engine.render_template('HEDGE_STARTED', data)")
+        
         symbol = signal_data.get('symbol', '')
         channel_name = signal_data.get('channel_name', '')
         loss_pct = signal_data.get('loss_pct', '0.00')
@@ -104,7 +161,9 @@ class SwedishTemplatesV2:
     
     @staticmethod
     def reentry_attempted(signal_data: Dict[str, Any]) -> str:
-        """Re-entry attempted template."""
+        """DEPRECATED: Use engine.render_template('REENTRY_STARTED', data)"""
+        raise RuntimeError("DEPRECATED: Use app/telegram/engine.render_template('REENTRY_STARTED', data)")
+        
         symbol = signal_data.get('symbol', '')
         channel_name = signal_data.get('channel_name', '')
         attempt = signal_data.get('attempt', 1)
@@ -140,7 +199,9 @@ class SwedishTemplatesV2:
     
     @staticmethod
     def trailing_stop_activated(signal_data: Dict[str, Any]) -> str:
-        """Trailing stop activated template."""
+        """DEPRECATED: Use engine.render_template('TRAILING_ACTIVATED', data)"""
+        raise RuntimeError("DEPRECATED: Use app/telegram/engine.render_template('TRAILING_ACTIVATED', data)")
+        
         symbol = signal_data.get('symbol', '')
         channel_name = signal_data.get('channel_name', '')
         gain_pct = signal_data.get('gain_pct', '0.00')
@@ -158,7 +219,9 @@ class SwedishTemplatesV2:
     
     @staticmethod
     def entry_placed(signal_data: Dict[str, Any]) -> str:
-        """Entry order placed template."""
+        """DEPRECATED: Use engine.render_template('ORDER_PLACED', data)"""
+        raise RuntimeError("DEPRECATED: Use app/telegram/engine.render_template('ORDER_PLACED', data)")
+        
         symbol = signal_data.get('symbol', '')
         direction = signal_data.get('direction', '')
         channel_name = signal_data.get('channel_name', '')
@@ -196,7 +259,9 @@ class SwedishTemplatesV2:
     
     @staticmethod
     def entry_filled(signal_data: Dict[str, Any]) -> str:
-        """Entry filled template."""
+        """DEPRECATED: Use engine.render_template('POSITION_OPENED', data)"""
+        raise RuntimeError("DEPRECATED: Use app/telegram/engine.render_template('POSITION_OPENED', data)")
+        
         symbol = signal_data.get('symbol', '')
         direction = signal_data.get('direction', '')
         channel_name = signal_data.get('channel_name', '')
@@ -330,7 +395,9 @@ class SwedishTemplatesV2:
     
     @staticmethod
     def breakeven_activated(signal_data: Dict[str, Any]) -> str:
-        """Breakeven activated template."""
+        """DEPRECATED: Use engine.render_template('BREAKEVEN_MOVED', data)"""
+        raise RuntimeError("DEPRECATED: Use app/telegram/engine.render_template('BREAKEVEN_MOVED', data)")
+        
         symbol = signal_data.get('symbol', '')
         channel_name = signal_data.get('channel_name', '')
         gain_pct = signal_data.get('gain_pct', '0')
@@ -521,5 +588,16 @@ Vinst %: {win_rate:.1f}%
 
 # Global function to get templates instance
 def get_swedish_templates():
-    """Get Swedish templates instance."""
-    return SwedishTemplatesV2()
+    """
+    Get Swedish templates instance.
+    
+    DEPRECATED: Use app/telegram/engine.render_template() instead.
+    CLIENT SPEC Line 33: Raises RuntimeError to enforce single template path.
+    """
+    # CLIENT SPEC Line 33: Function-level lock to prevent usage
+    raise RuntimeError(
+        "DEPRECATED: get_swedish_templates() is forbidden. "
+        "Use app/telegram/engine.render_template() instead. "
+        "All messages must go through ConfirmationGate → Engine → Output. "
+        "See doc/10_12_requirement.txt line 21-33."
+    )

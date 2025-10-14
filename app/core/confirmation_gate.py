@@ -157,7 +157,9 @@ class ConfirmationGate:
         entries: List,
         qty: Decimal,
         leverage: Decimal,
-        channel_name: str
+        channel_name: str,
+        tps: List = None,
+        sl = None
     ) -> bool:
         """Place entry orders with confirmation gate."""
         from app.bybit.client import BybitClient
@@ -289,6 +291,46 @@ class ConfirmationGate:
             im_confirmed = await self._fetch_confirmed_im(symbol)
             
             # Prepare data for template with all CLIENT SPEC required fields
+            # CRITICAL FIX: Show ORDER PRICE, not position average price!
+            # Customer requirement: "Order Placed" should show the order price from signal
+            from decimal import Decimal
+            import asyncio
+            
+            # CUSTOMER FIX: Use signal entry prices for "Order Placed" message
+            # Don't use position avgPrice which may be from existing position
+            entry1_price = None
+            entry2_price = None
+            
+            # Use the order prices from signal (what bot ordered at)
+            if entries and len(entries) > 0:
+                if entries[0] != "MARKET" and entries[0] != 0:
+                    entry1_price = Decimal(str(entries[0]))
+                else:
+                    # For MARKET orders, try to get the actual fill price
+                    try:
+                        # Get recent executions to find fill price
+                        from app.bybit.client import get_bybit_client
+                        client = get_bybit_client()
+                        position_resp = await client.get_position(STRICT_CONFIG.supported_categories[0], symbol)
+                        
+                        if position_resp.get('retCode') == 0:
+                            positions = position_resp.get('result', {}).get('list', [])
+                            if positions and positions[0].get('size', '0') != '0':
+                                avg_price = positions[0].get('avgPrice', '0')
+                                if avg_price and avg_price != '0':
+                                    entry1_price = Decimal(str(avg_price))
+                    except Exception as e:
+                        system_logger.warning(f"Could not fetch fill price for MARKET order: {e}")
+                        entry1_price = None  # Will show as "MARKET"
+            
+            if entries and len(entries) > 1:
+                if entries[1] != "MARKET" and entries[1] != 0:
+                    entry2_price = Decimal(str(entries[1]))
+                else:
+                    entry2_price = entry1_price  # Same as entry1
+            else:
+                entry2_price = entry1_price  # Same as entry1
+            
             template_data = {
                 "symbol": symbol,
                 "side": direction,
@@ -302,6 +344,17 @@ class ConfirmationGate:
                 "post_only": (STRICT_CONFIG.entry_time_in_force == "PostOnly"),
                 "reduce_only": False,  # Entry orders are never reduce-only
                 "im_confirmed": im_confirmed,
+                "entry": entry1_price,  # Base entry price
+                "entry1": entry1_price,  # Dual entry 1
+                "entry2": entry2_price,  # Dual entry 2
+                "bot_order_id": f"BOT-{symbol}",  # Bot-generated order ID
+                "bybit_order_id": order_id,  # Bybit order ID
+                # Pass TP/SL for proper trade type detection
+                "tp1": tps[0] if tps and len(tps) > 0 else None,
+                "tp2": tps[1] if tps and len(tps) > 1 else None,
+                "tp3": tps[2] if tps and len(tps) > 2 else None,
+                "tp4": tps[3] if tps and len(tps) > 3 else None,
+                "sl": sl,
             }
             
             # Render template using TemplateEngine
@@ -327,7 +380,8 @@ class ConfirmationGate:
         qty: Decimal,
         tps: List,
         sl,
-        channel_name: str
+        channel_name: str,
+        entry_price: Decimal = None
     ) -> bool:
         """Place exit orders (TP/SL) with confirmation gate."""
         from app.bybit.client import BybitClient
@@ -460,13 +514,16 @@ class ConfirmationGate:
                     if processed_sl:
                         # CRITICAL FIX: Always treat as absolute price
                         # The signal parser extracts absolute prices, not percentages
+                        # Use entry_price if provided, otherwise fall back to current_price
+                        price_for_calc = entry_price if entry_price else current_price
+                        
                         if side == "LONG":
-                            sl_percentage = ((current_price - processed_sl) / current_price) * 100
+                            sl_percentage = ((price_for_calc - processed_sl) / price_for_calc) * 100
                         else:  # SHORT
-                            sl_percentage = ((processed_sl - current_price) / current_price) * 100
+                            sl_percentage = ((processed_sl - price_for_calc) / price_for_calc) * 100
                         
                         # Log SL calculation for debugging
-                        system_logger.info(f"SL calculation for {symbol}: SL={processed_sl}, Current={current_price}, Side={side}, Percentage={sl_percentage}%")
+                        system_logger.info(f"SL calculation for {symbol}: SL={processed_sl}, Entry={price_for_calc}, Side={side}, Percentage={sl_percentage}%")
                         
                         # Validate percentage is reasonable (1% to 50% for normal SL)
                         if abs(sl_percentage) > 50:
@@ -474,12 +531,15 @@ class ConfirmationGate:
                             # Don't reject, just warn - might be intentional for high-risk trades
                     
                     # Use intelligent TP/SL handler with retry
+                    # Use entry_price if provided, otherwise fall back to current_price
+                    price_for_tpsl = entry_price if entry_price else current_price
+                    
                     tpsl_result = await retry_until_ok(
                         lambda: set_intelligent_tpsl_fixed(
                             symbol=symbol,
                             side=side,
                             position_size=qty,
-                            entry_price=current_price,
+                            entry_price=price_for_tpsl,
                             tp_levels=tp_percentages,
                             sl_percentage=sl_percentage,
                             trade_id=operation_id,
@@ -542,6 +602,8 @@ class ConfirmationGate:
             Note: TP/SL confirmations use simpler formatting since they're
             post-position placement updates.
             """
+            from app.telegram.formatting import fmt_percent, fmt_price
+            
             # Extract actual TP/SL values from Bybit result
             actual_tps = []
             actual_sl = "N/A"
@@ -551,24 +613,27 @@ class ConfirmationGate:
                     if 'intelligent_tpsl' in result:
                         tpsl_data = result['intelligent_tpsl']
                         if 'tp_levels' in tpsl_data:
-                            actual_tps = [f"{tp}%" for tp in tpsl_data['tp_levels']]
+                            # Format TP percentages with 2 decimals
+                            actual_tps = [fmt_percent(float(tp)) for tp in tpsl_data['tp_levels']]
                         if 'sl_percentage' in tpsl_data:
-                            actual_sl = f"{tpsl_data['sl_percentage']}%"
+                            # Format SL percentage with 2 decimals (Swedish format)
+                            actual_sl = fmt_percent(float(tpsl_data['sl_percentage']))
             
             # Fallback to original values if no actual values found
             if not actual_tps:
                 actual_tps = [str(tp) for tp in tps]
             if actual_sl == "N/A" and sl:
-                actual_sl = str(sl)
+                actual_sl = fmt_price(sl, decimals=2)
             
-            # CLIENT SPEC: Simple TP/SL confirmation with bold labels
+            # CLIENT SPEC: Simple TP/SL confirmation with PRICES (not percentages!)
+            # Customer requirement: "Sl not %" - show SL as PRICE, not percentage
             message = f"""**✅ TP/SL bekräftad av Bybit**
 
 📊 **Symbol:** {symbol}
 📈 **Riktning:** {side}
 💰 **Storlek:** {qty}
-🎯 **TP:** {', '.join(actual_tps)}
-🛑 **SL:** {actual_sl}
+🎯 **TP:** {', '.join([str(tp) for tp in tps]) if tps else 'DEFAULT_TP'}
+🛑 **SL:** {fmt_price(sl, decimals=2) if sl else 'Mark price OK'}
 📺 **Källa:** {channel_name}"""
             
             await send_message(message, template_name="tp_sl_confirmed", symbol=symbol)

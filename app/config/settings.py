@@ -24,7 +24,8 @@ BYBIT_RECV_WINDOW = os.getenv("BYBIT_RECV_WINDOW", "30000")
 ALWAYS_WHITELIST_CHANNELS = [
     "VIP Trading Channel",
     "Elite Trading Signals", 
-    "Crypto Pump Club"
+    "Crypto Pump Club",
+    "MY_TEST_CHANNEL"  # For testing
 ]
 
 TELEGRAM_SESSION = os.getenv("TELEGRAM_SESSION", "bybit_copybot_session")

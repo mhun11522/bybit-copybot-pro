@@ -8,13 +8,13 @@ from decimal import Decimal
 from typing import Dict, Any
 from app.core.logging import system_logger
 from app.telegram.output import send_message
-from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
+# CLIENT FIX: Removed unused swedish_templates_v2 import
 
 class WebSocketTradeHandlers:
     """Handlers for WebSocket trade events."""
     
     def __init__(self):
-        self.templates = SwedishTemplatesV2()
+        # CLIENT FIX: Removed unused self.templates
         self.active_trades: Dict[str, Dict[str, Any]] = {}
     
     async def handle_execution(self, execution_data: Dict[str, Any]):
@@ -82,66 +82,170 @@ class WebSocketTradeHandlers:
         return "entry_" in order_id
     
     async def _handle_entry_fill(self, symbol: str, side: str, qty: Decimal, price: Decimal, order_id: str):
-        """Handle entry order fill."""
+        """
+        Handle entry order fill - CLIENT SPEC dual-limit flow.
+        
+        Flow: ENTRY 1 filled → ENTRY 2 filled → ENTRY CONSOLIDATED
+        """
         try:
-            # Update trade state to ENTRY_FILLED
-            from app.core.strict_fsm import get_fsm
-            fsm = await get_fsm()
+            from app.telegram.engine import render_template
+            from app.core.confirmation_gate import ConfirmationGate
+            from app.bybit.client import get_bybit_client
             
-            # Find the trade by symbol and update state
-            trade_id = f"{symbol}_{side}_{int(asyncio.get_event_loop().time())}"
+            # Determine which entry this is (E1 or E2) from orderLinkId
+            entry_no = 1
+            if "-E2" in order_id or "_E2" in order_id:
+                entry_no = 2
+            elif "-E1" in order_id or "_E1" in order_id:
+                entry_no = 1
+            else:
+                # Fallback: check if this symbol already has one fill
+                if symbol in self.active_trades and "entry1_filled" in self.active_trades[symbol]:
+                    entry_no = 2
             
-            # Update FSM state
-            await fsm.handle_entry_filled(trade_id, price, qty)
+            # Initialize trade tracking if needed
+            if symbol not in self.active_trades:
+                self.active_trades[symbol] = {
+                    "trade_id": f"{symbol}_{int(asyncio.get_event_loop().time())}",
+                    "side": "LONG" if side == "Buy" else "SHORT"
+                }
             
-            # Send confirmation message
-            direction_text = "LONG" if side == "Buy" else "SHORT"
-            message = f"""
-🎯 **Entry Order Fylld**
-
-📊 **Symbol:** {symbol}
-📈 **Riktning:** {direction_text}
-💰 **Kvantitet:** {qty}
-💵 **Pris:** {price}
-🆔 **Order ID:** {order_id}
-
-✅ **Position öppnad framgångsrikt**
-            """.strip()
+            trade_info = self.active_trades[symbol]
             
-            await send_message(message)
+            # Fetch exact IM from Bybit for this entry
+            client = get_bybit_client()
+            gate = ConfirmationGate(client)
+            im_confirmed = await gate._fetch_confirmed_im(symbol)
             
-            system_logger.info(f"Entry filled: {symbol} {side} {qty}@{price}")
+            # Store this entry's data
+            if entry_no == 1:
+                trade_info["entry1_filled"] = True
+                trade_info["entry1_price"] = price
+                trade_info["entry1_qty"] = qty
+                trade_info["entry1_im"] = im_confirmed / Decimal("2")  # Split IM 50/50
+            else:
+                trade_info["entry2_filled"] = True
+                trade_info["entry2_price"] = price
+                trade_info["entry2_qty"] = qty
+                trade_info["entry2_im"] = im_confirmed / Decimal("2")  # Split IM 50/50
+            
+            # Send ENTRY TAKEN message
+            rendered = render_template("ENTRY_TAKEN", {
+                'entry_no': entry_no,
+                'source_name': trade_info.get('channel_name', 'Unknown'),
+                'symbol': symbol,
+                'price': price,
+                'qty': qty,
+                'im': im_confirmed / Decimal("2"),  # IM for this entry
+                'im_total': im_confirmed,  # Total IM
+                'trade_id': trade_info['trade_id']
+            })
+            
+            await send_message(
+                rendered["text"],
+                template_name=rendered["template_name"],
+                trade_id=rendered["trade_id"],
+                symbol=rendered["symbol"],
+                hashtags=rendered["hashtags"]
+            )
+            
+            # If both entries are now filled, send ENTRY CONSOLIDATED
+            if trade_info.get("entry1_filled") and trade_info.get("entry2_filled"):
+                # Calculate VWAP
+                e1_price = trade_info["entry1_price"]
+                e1_qty = trade_info["entry1_qty"]
+                e2_price = trade_info["entry2_price"]
+                e2_qty = trade_info["entry2_qty"]
+                
+                total_qty = e1_qty + e2_qty
+                avg_entry = (e1_price * e1_qty + e2_price * e2_qty) / total_qty
+                
+                # Send ENTRY CONSOLIDATED message
+                consolidated = render_template("ENTRY_CONSOLIDATED", {
+                    'source_name': trade_info.get('channel_name', 'Unknown'),
+                    'symbol': symbol,
+                    'avg_entry': avg_entry,
+                    'total_qty': total_qty,
+                    'total_im': im_confirmed,
+                    'trade_id': trade_info['trade_id']
+                })
+                
+                await send_message(
+                    consolidated["text"],
+                    template_name=consolidated["template_name"],
+                    trade_id=consolidated["trade_id"],
+                    symbol=consolidated["symbol"],
+                    hashtags=consolidated["hashtags"]
+                )
+            
+            system_logger.info(f"Entry {entry_no} filled: {symbol} {side} {qty}@{price}")
             
         except Exception as e:
             system_logger.error(f"Error handling entry fill: {e}", exc_info=True)
     
     async def _handle_exit_fill(self, symbol: str, side: str, qty: Decimal, price: Decimal, order_id: str):
-        """Handle exit order fill (TP/SL)."""
+        """
+        Handle exit order fill (TP/SL) - CLIENT SPEC compliance.
+        
+        Uses Engine templates for all messages.
+        """
         try:
-            # Update trade state to CLOSED
-            from app.core.strict_fsm import get_fsm
-            fsm = await get_fsm()
+            from app.telegram.engine import render_template
+            from app.core.confirmation_gate import ConfirmationGate
+            from app.bybit.client import get_bybit_client
             
-            trade_id = f"{symbol}_{side}_{int(asyncio.get_event_loop().time())}"
+            # Get trade info
+            trade_info = self.active_trades.get(symbol, {})
+            trade_id = trade_info.get('trade_id', f"{symbol}_{int(asyncio.get_event_loop().time())}")
             
-            # Update FSM state
-            await fsm.handle_trade_closed(trade_id, price, qty)
+            # Fetch exact IM from Bybit
+            client = get_bybit_client()
+            gate = ConfirmationGate(client)
+            im_confirmed = await gate._fetch_confirmed_im(symbol)
             
-            # Send confirmation message
-            direction_text = "LONG" if side == "Buy" else "SHORT"
-            message = f"""
-🎯 **Exit Order Fylld**
-
-📊 **Symbol:** {symbol}
-📈 **Riktning:** {direction_text}
-💰 **Kvantitet:** {qty}
-💵 **Pris:** {price}
-🆔 **Order ID:** {order_id}
-
-✅ **Position stängd framgångsrikt**
-            """.strip()
+            # Determine if this is TP or SL based on orderLinkId
+            is_tp = "-TP" in order_id or "_TP" in order_id
             
-            await send_message(message)
+            # Send appropriate message via Engine
+            if is_tp:
+                # Extract TP level (TP1, TP2, etc.)
+                tp_level = "TP1"
+                if "-TP2" in order_id or "_TP2" in order_id:
+                    tp_level = "TP2"
+                elif "-TP3" in order_id or "_TP3" in order_id:
+                    tp_level = "TP3"
+                elif "-TP4" in order_id or "_TP4" in order_id:
+                    tp_level = "TP4"
+                
+                rendered = render_template("TP_TAKEN", {
+                    'tp_level': tp_level,
+                    'source_name': trade_info.get('channel_name', 'Unknown'),
+                    'symbol': symbol,
+                    'price': price,
+                    'qty': qty,
+                    'pnl_usdt': Decimal("0"),  # Would need calculation
+                    'pnl_pct': Decimal("0"),   # Would need calculation
+                    'trade_id': trade_id
+                })
+            else:
+                # SL hit
+                rendered = render_template("SL_HIT", {
+                    'source_name': trade_info.get('channel_name', 'Unknown'),
+                    'symbol': symbol,
+                    'price': price,
+                    'qty': qty,
+                    'pnl_usdt': Decimal("0"),  # Would need calculation
+                    'pnl_pct': Decimal("0"),   # Would need calculation
+                    'trade_id': trade_id
+                })
+            
+            await send_message(
+                rendered["text"],
+                template_name=rendered["template_name"],
+                trade_id=rendered["trade_id"],
+                symbol=rendered["symbol"],
+                hashtags=rendered["hashtags"]
+            )
             
             system_logger.info(f"Exit filled: {symbol} {side} {qty}@{price}")
             

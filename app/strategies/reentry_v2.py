@@ -5,7 +5,8 @@ from typing import Dict, Any
 from app.bybit.client import BybitClient
 from app.core.logging import system_logger
 from app.telegram.output import send_message
-from app.telegram.swedish_templates_v2 import SwedishTemplatesV2
+from app.telegram.engine import render_template
+from app.core.confirmation_gate import ConfirmationGate
 
 class ReentryStrategyV2:
     """Re-entry strategy: Attempts re-entries after SL hit (up to 3 attempts)."""
@@ -18,7 +19,12 @@ class ReentryStrategyV2:
         from app.bybit.client import get_bybit_client
         self.bybit = get_bybit_client()
         self.attempts = 0
-        self.max_attempts = 3
+        
+        # CLIENT FIX (COMPLIANCE doc/10_12_2.md Lines 314-318):
+        # Read from STRICT_CONFIG instead of hardcoding
+        from app.core.strict_config import STRICT_CONFIG
+        self.max_attempts = STRICT_CONFIG.max_reentries  # Maximum re-entry attempts
+        
         self.last_entry_price = Decimal("0")
         self.entry_offset = Decimal("0.001")  # 0.1% offset for re-entries
     
@@ -40,10 +46,14 @@ class ReentryStrategyV2:
     
     def _should_reenter(self, current_price: Decimal) -> bool:
         """Check if conditions are favorable for re-entry."""
-        # Simple logic: re-enter if price has moved 0.5% from last entry
+        # CLIENT FIX: Use configured entry_offset instead of hardcoded 0.5%
+        # Simple logic: re-enter if price has moved entry_offset % from last entry
+        if self.last_entry_price == Decimal("0"):
+            return True  # First re-entry always allowed
+        
         price_change = abs(current_price - self.last_entry_price) / self.last_entry_price
         
-        return price_change >= Decimal("0.005")  # 0.5% minimum movement
+        return price_change >= self.entry_offset  # Use configured offset
     
     async def _place_reentry_order(self, current_price: Decimal) -> bool:
         """Place re-entry order."""
@@ -86,14 +96,52 @@ class ReentryStrategyV2:
             if result.get('retCode') == 0:
                 system_logger.info(f"Re-entry order placed for {self.symbol} (attempt {self.attempts + 1})")
                 
-                # Send notification
-                signal_data = {
+                # CLIENT FIX: Send notification via Engine after Bybit confirmation
+                # Fetch exact IM and leverage from Bybit using singleton pattern
+                from app.core.confirmation_gate import get_confirmation_gate
+                gate = get_confirmation_gate()
+                im_confirmed = await gate._fetch_confirmed_im(self.symbol)
+                
+                # Get leverage from position (FROM BYBIT!)
+                pos = await self.bybit.positions("linear", self.symbol)
+                current_leverage = Decimal("6.00")  # Fallback
+                if pos.get("result", {}).get("list"):
+                    current_leverage = Decimal(str(pos["result"]["list"][0].get("leverage", "6.00")))
+                
+                # PHASE 4: Pass complete signal data including TPs/SL
+                # Get original signal data if available
+                original_tps = getattr(self, 'tps', [])
+                original_sl = getattr(self, 'sl', None)
+                
+                # PRIORITY 2: Use Engine queue instead of direct send_message
+                from app.telegram.engine import get_template_engine
+                engine = get_template_engine()
+                
+                # Prepare data for template
+                template_data = {
                     'symbol': self.symbol,
-                    'channel_name': self.channel_name,
-                    'attempt': self.attempts + 1
+                    'source_name': self.channel_name,
+                    'attempt': self.attempts + 1,
+                    'side': self.direction,
+                    'leverage': current_leverage,  # FROM BYBIT!
+                    'entry': entry_price,
+                    'entry1': entry_price,
+                    'entry2': entry_price,
+                    'tp1': original_tps[0] if len(original_tps) > 0 else None,
+                    'tp2': original_tps[1] if len(original_tps) > 1 else None,
+                    'tp3': original_tps[2] if len(original_tps) > 2 else None,
+                    'tp4': original_tps[3] if len(original_tps) > 3 else None,
+                    'sl': original_sl,
+                    'price': entry_price,
+                    'qty': original_size,
+                    'im_confirmed': im_confirmed,
+                    'trade_id': self.trade_id,
+                    'bot_order_id': f"BOT-{self.trade_id}-REENTRY{self.attempts+1}",
+                    'bybit_order_id': ''
                 }
-                message = SwedishTemplatesV2.reentry_attempted(signal_data)
-                await send_message(message)
+                
+                # Enqueue through Engine (includes rate limiting & retry)
+                await engine.enqueue_and_send("REENTRY_STARTED", template_data, priority=2)
                 
                 return True
             else:

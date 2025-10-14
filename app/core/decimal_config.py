@@ -1,6 +1,6 @@
 """Decimal precision configuration and validation."""
 
-from decimal import Decimal, getcontext, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, getcontext, ROUND_DOWN, ROUND_UP, ROUND_FLOOR
 from typing import Union, Any
 import warnings
 
@@ -8,9 +8,12 @@ import warnings
 getcontext().prec = 28
 
 # Rounding modes for different operations
-PRICE_ROUNDING = ROUND_DOWN  # Always round down for prices to avoid overpaying
-QTY_ROUNDING = ROUND_DOWN    # Always round down for quantities to avoid over-leveraging
-PNL_ROUNDING = ROUND_DOWN    # Conservative PnL rounding
+# CLIENT SPEC Requirements (doc/10_12_requirement.txt):
+# Line 285: "Price quantization: ROUND_DOWN"
+# Line 286: "Quantity quantization: ROUND_FLOOR (not ROUND_DOWN)" ← CRITICAL!
+PRICE_ROUNDING = ROUND_DOWN   # Line 285: Prices use ROUND_DOWN
+QTY_ROUNDING = ROUND_FLOOR    # Line 286: Quantities use ROUND_FLOOR (NOT ROUND_DOWN!)
+PNL_ROUNDING = ROUND_DOWN     # Conservative PnL rounding
 
 def to_decimal(value: Union[str, int, float, Decimal]) -> Decimal:
     """Convert any numeric value to Decimal with validation."""

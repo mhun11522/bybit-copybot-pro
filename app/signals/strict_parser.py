@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from app.core.decimal_config import to_decimal, quantize_price
 from app.core.strict_config import STRICT_CONFIG
 from app.core.logging import system_logger
+from app.core.symbol_filter import is_symbol_available
 
 class StrictSignalParser:
     """Strict signal parser implementing exact client requirements."""
@@ -243,16 +244,29 @@ class StrictSignalParser:
             if not symbol:
                 return None
             
+            # CLIENT FIX: Auto-filter unavailable symbols (demo environment)
+            # Check if symbol is available on Bybit before processing
+            if not await is_symbol_available(symbol):
+                system_logger.info(f"✋ Signal filtered: {symbol} not available on Bybit (demo environment)", {
+                    'symbol': symbol,
+                    'channel': channel_name,
+                    'reason': 'symbol_unavailable_on_bybit',
+                    'action': 'FILTERED'
+                })
+                return None
+            
             # Validate symbol is tradeable on Bybit with fallback logic
             from app.core.symbol_registry import get_symbol_registry
             registry = await get_symbol_registry()
             symbol_info = await registry.get_symbol_info(symbol)
             
-            # If symbol not found, reject (no unsafe fallbacks)
+            # Double-check symbol info (should already be filtered by above check)
             if not symbol_info or not symbol_info.is_trading:
-                system_logger.debug("Signal parsing failed", {
+                system_logger.warning("Signal parsing failed - symbol not trading", {
                     'text': message[:100],
                     'channel': channel_name,
+                    'symbol': symbol,
+                    'status': symbol_info.status if symbol_info else 'NOT_FOUND',
                     'reason': f'Symbol {symbol} not tradeable on Bybit (USDT-only, no fallbacks)'
                 })
                 return None
@@ -316,17 +330,33 @@ class StrictSignalParser:
                 })
                 return None
             
-            # Validate SL makes sense for position direction (if provided)
+            # Validate SL and TP make sense for position direction (if provided)
             if sl and sl != "DEFAULT_SL":
                 # Get reference price (first entry or market price)
+                reference_price = None
                 if entries[0] != "MARKET":
                     reference_price = to_decimal(entries[0])
-                    
+                else:
+                    # CRITICAL FIX: For MARKET entries, get current market price for validation
+                    from app.bybit.client import get_bybit_client
+                    try:
+                        client = get_bybit_client()
+                        ticker_response = await client.get_ticker(symbol)
+                        if ticker_response.get("retCode") == 0:
+                            last_price = ticker_response["result"]["list"][0]["lastPrice"]
+                            reference_price = to_decimal(last_price)
+                            system_logger.info(f"Using current market price {reference_price} for MARKET entry validation")
+                    except Exception as e:
+                        system_logger.warning(f"Could not get market price for validation: {e}")
+                        # Continue without validation if we can't get price
+                        reference_price = None
+                
+                if reference_price:
                     # Validate SL direction
                     if direction in ["BUY", "LONG"]:
                         # For LONG: SL must be BELOW entry
                         if sl >= reference_price:
-                            system_logger.warning(f"Invalid SL for LONG: SL ({sl}) >= entry ({reference_price}), rejecting signal", {
+                            system_logger.warning(f"❌ Invalid SL for LONG: SL ({sl}) >= entry ({reference_price}), REJECTING signal", {
                                 'symbol': symbol,
                                 'direction': direction,
                                 'entry': str(reference_price),
@@ -336,13 +366,39 @@ class StrictSignalParser:
                     else:  # SHORT or SELL
                         # For SHORT: SL must be ABOVE entry
                         if sl <= reference_price:
-                            system_logger.warning(f"Invalid SL for SHORT: SL ({sl}) <= entry ({reference_price}), rejecting signal", {
+                            system_logger.warning(f"❌ Invalid SL for SHORT: SL ({sl}) <= entry ({reference_price}), REJECTING signal", {
                                 'symbol': symbol,
                                 'direction': direction,
                                 'entry': str(reference_price),
                                 'sl': str(sl)
                             })
                             return None
+                    
+                    # CRITICAL FIX: Also validate TPs make sense for direction
+                    if tps:
+                        for i, tp in enumerate(tps, 1):
+                            if tp and tp != "DEFAULT_TP":
+                                tp_decimal = to_decimal(tp)
+                                if direction in ["BUY", "LONG"]:
+                                    # For LONG: TP must be ABOVE entry
+                                    if tp_decimal <= reference_price:
+                                        system_logger.warning(f"❌ Invalid TP{i} for LONG: TP ({tp_decimal}) <= entry ({reference_price}), REJECTING signal", {
+                                            'symbol': symbol,
+                                            'direction': direction,
+                                            'entry': str(reference_price),
+                                            'tp': str(tp_decimal)
+                                        })
+                                        return None
+                                else:  # SHORT or SELL
+                                    # For SHORT: TP must be BELOW entry
+                                    if tp_decimal >= reference_price:
+                                        system_logger.warning(f"❌ Invalid TP{i} for SHORT: TP ({tp_decimal}) >= entry ({reference_price}), REJECTING signal", {
+                                            'symbol': symbol,
+                                            'direction': direction,
+                                            'entry': str(reference_price),
+                                            'tp': str(tp_decimal)
+                                        })
+                                        return None
             
             # Synthesize SL if missing
             if not sl:

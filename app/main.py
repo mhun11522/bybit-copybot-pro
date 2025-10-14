@@ -34,7 +34,7 @@ from app.config.settings import (
     MAX_CONCURRENT_TRADES, ALWAYS_WHITELIST_CHANNELS
 )
 from app.telegram.strict_client import start_strict_telegram
-from app.reports.strict_scheduler import start_strict_report_scheduler
+# CLIENT FIX: Removed old strict_scheduler import - using ReportSchedulerV2 only
 from app.reports.cleanup import cleanup_scheduler
 from app.runtime.resume import resume_open_trades
 from app.bybit.client import BybitClient
@@ -46,14 +46,23 @@ from app.core.idempotency import get_idempotency_manager
 # Fix Windows console encoding for emojis
 if sys.platform.startswith("win"):
     import codecs
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8')
-    else:
-        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
-    if hasattr(sys.stderr, 'reconfigure'):
-        sys.stderr.reconfigure(encoding='utf-8')
-    else:
-        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+    # Set environment variable for proper UTF-8 handling
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    # Try to reconfigure stdout/stderr
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        else:
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
+    except:
+        pass
+    try:
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        else:
+            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
+    except:
+        pass
 
 # Windows asyncio configuration for Python 3.10+
 if sys.platform.startswith("win"):
@@ -222,9 +231,73 @@ async def main():
         # Validate API keys first (fail-fast)
         await _validate_api(client)
         
-        # Start strict report scheduler (exact client timing)
-        await start_strict_report_scheduler()
-        print("✅ Strict report scheduler started (Daily 08:00, Weekly Sat 22:00)")
+        # =================================================================
+        # CLIENT SPEC PRODUCTION BLOCKERS - Initialize critical systems
+        # =================================================================
+        
+        # BLOCKER #3: Journal reconciliation on startup
+        try:
+            from app.core.journal import reconcile_on_startup, get_append_only_journal
+            print("🔍 Running journal reconciliation...")
+            reconciliation_report = await reconcile_on_startup(client)
+            
+            if reconciliation_report["status"] == "clean":
+                print(f"✅ Journal reconciliation CLEAN ({reconciliation_report['journal_order_count']} entries)")
+            else:
+                print(f"⚠️ Journal reconciliation found issues:")
+                if reconciliation_report.get("orphans"):
+                    print(f"   - Orphans: {len(reconciliation_report['orphans'])}")
+                if reconciliation_report.get("missing"):
+                    print(f"   - Missing: {len(reconciliation_report['missing'])}")
+        except Exception as e:
+            print(f"⚠️ Journal reconciliation failed: {e}")
+            system_logger.warning(f"Journal reconciliation failed (continuing): {e}")
+        
+        # PRIORITY 2: Start message queue worker
+        try:
+            from app.telegram.engine import get_template_engine
+            engine = get_template_engine()
+            await engine.start_queue()
+            print("✅ Telegram message queue started")
+            system_logger.info("Message queue worker started")
+        except Exception as e:
+            print(f"⚠️ Message queue start failed: {e}")
+            system_logger.warning(f"Message queue start failed (continuing): {e}")
+        
+        # BLOCKER #4: Start NTP monitoring
+        try:
+            from app.core.ntp_sync import start_ntp_monitoring, get_ntp_monitor
+            await start_ntp_monitoring()
+            ntp_monitor = get_ntp_monitor()
+            
+            if ntp_monitor.is_trading_allowed():
+                print(f"✅ NTP monitoring started (drift: {ntp_monitor.last_drift * 1000 if ntp_monitor.last_drift else 0:.2f} ms)")
+            else:
+                print(f"⚠️ NTP drift too high - trading BLOCKED")
+        except Exception as e:
+            print(f"⚠️ NTP monitoring not available: {e}")
+            system_logger.warning(f"NTP monitoring disabled: {e}")
+        
+        # BLOCKER #10: Start health API server
+        try:
+            from app.api.health import start_health_server
+            print("🏥 Starting health API server on port 8080...")
+            asyncio.create_task(start_health_server(host="0.0.0.0", port=8080))
+            print("✅ Health API started: http://localhost:8080/health")
+            print("   - /health   - Basic health check")
+            print("   - /status   - Detailed status")
+            print("   - /metrics  - Prometheus metrics")
+            print("   - /killswitch - Emergency stop (requires ADMIN_TOKEN)")
+        except Exception as e:
+            print(f"⚠️ Health API not available: {e}")
+            system_logger.warning(f"Health API disabled: {e}")
+        
+        # =================================================================
+        # End of production blocker initializations
+        # =================================================================
+        
+        # CLIENT FIX: Removed old strict_report_scheduler - using ReportSchedulerV2 only
+        # See lines below for the new scheduler initialization
         
         # Start 6-day cleanup scheduler for unfilled orders
         asyncio.create_task(cleanup_scheduler())
@@ -306,9 +379,8 @@ async def main():
             # Close HTTP client first
             await client.aclose()
             
-            # Stop report scheduler
-            from app.reports.strict_scheduler import stop_strict_report_scheduler
-            await stop_strict_report_scheduler()
+            # CLIENT FIX: Removed old strict_scheduler stop call
+            # ReportSchedulerV2 cleanup handled automatically
             
             # Clean up resume tasks
             from app.runtime.resume import cleanup_resume_tasks
@@ -333,6 +405,16 @@ async def main():
                 await report_scheduler.stop()
             except Exception as e:
                 print(f"⚠️ Report scheduler cleanup error: {e}")
+            
+            # PRIORITY 2: Stop message queue
+            try:
+                from app.telegram.engine import get_template_engine
+                engine = get_template_engine()
+                await engine.stop_queue()
+                system_logger.info("Message queue stopped")
+                print("✅ Message queue stopped")
+            except Exception as e:
+                print(f"⚠️ Message queue cleanup error: {e}")
             
             # Stop simulated TP/SL manager
             try:

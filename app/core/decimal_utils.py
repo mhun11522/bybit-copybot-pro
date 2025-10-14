@@ -1,6 +1,6 @@
 """Decimal utilities for financial calculations."""
 
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_UP, ROUND_FLOOR
 from typing import Union, Any
 import re
 
@@ -18,16 +18,33 @@ def to_decimal(value: Any) -> Decimal:
         raise ValueError(f"Cannot convert {type(value)} to Decimal")
 
 def quantize_price(price: Decimal, tick_size: Decimal) -> Decimal:
-    """Quantize price to tick size."""
+    """
+    Quantize price to tick size.
+    
+    CLIENT SPEC Line 285: Use ROUND_DOWN for prices to avoid overpaying.
+    """
     if tick_size == 0:
         return price
     return price.quantize(tick_size, rounding=ROUND_DOWN)
 
 def quantize_qty(qty: Decimal, step_size: Decimal) -> Decimal:
-    """Quantize quantity to step size."""
+    """
+    Quantize quantity to step size.
+    
+    CLIENT SPEC Line 286: Use ROUND_FLOOR for quantities (NOT ROUND_DOWN).
+    
+    Difference:
+    - ROUND_DOWN: rounds toward zero (e.g., -1.5 → -1, 1.5 → 1)
+    - ROUND_FLOOR: rounds toward negative infinity (e.g., -1.5 → -2, 1.5 → 1)
+    
+    For positive quantities (normal case), both give same result.
+    For negative quantities (short positions), ROUND_FLOOR is more conservative.
+    
+    This is a BLOCKER requirement - must be ROUND_FLOOR per spec!
+    """
     if step_size == 0:
         return qty
-    return qty.quantize(step_size, rounding=ROUND_DOWN)
+    return qty.quantize(step_size, rounding=ROUND_FLOOR)
 
 def safe_divide(numerator: Decimal, denominator: Decimal, default: Decimal = Decimal('0')) -> Decimal:
     """Safely divide two decimals, returning default if denominator is zero."""

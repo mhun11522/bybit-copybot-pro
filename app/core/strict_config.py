@@ -6,6 +6,10 @@ import os
 from zoneinfo import ZoneInfo
 from app.core.logging import system_logger
 
+# CRITICAL FIX: Load .env BEFORE reading environment variables
+from dotenv import load_dotenv
+load_dotenv()  # Ensure .env is loaded before os.getenv() calls
+
 class StrictSettings:
     """Strict configuration matching client requirements exactly."""
     
@@ -16,8 +20,8 @@ class StrictSettings:
     timezone: str = "Europe/Stockholm"  # Client specified timezone
     
     # Leverage policy (exact client rules)
-    swing_leverage: Decimal = Decimal("6")
-    fast_leverage: Decimal = Decimal("10") 
+    swing_leverage: Decimal = Decimal("6.00")  # CLIENT SPEC: SWING must be x6.00
+    fast_leverage: Decimal = Decimal("10.00")  # CLIENT SPEC: FAST must be x10.00 
     min_dynamic_leverage: Decimal = Decimal("7.5")
     forbidden_leverage_gap_min: Decimal = Decimal("6")
     forbidden_leverage_gap_max: Decimal = Decimal("7.5")
@@ -110,9 +114,12 @@ class StrictSettings:
     source_whitelist: List[str] = list(channel_id_name_map.keys())
     
     # Order type enforcement - CLIENT SPECIFICATION
-    # Entries must ALWAYS be Limit orders (never Conditional)
-    entry_order_type: str = "Limit"  # Limit orders for deterministic execution
-    entry_time_in_force: str = "PostOnly"  # PostOnly maker-only orders (CLIENT REQUIREMENT #29)
+    # CLIENT SPEC REQUIREMENT: Must use LIMIT orders at EXACT signal entry price!
+    # Signal says "Entry: 63000", bot MUST place limit order at 63000 and WAIT
+    # PostOnly ensures order waits in book at signal price (no immediate market fill)
+    # THIS IS CRITICAL - entry price must match signal, NOT current market price!
+    entry_order_type: str = "Limit"  # LIMIT orders at signal price (CLIENT REQUIREMENT!)
+    entry_time_in_force: str = "PostOnly"  # PostOnly to wait at exact signal price
     exit_order_type: str = "Market"  # Market orders for TP/SL (Conditional)
     exit_reduce_only: bool = True
     exit_trigger_by: str = "MarkPrice"
@@ -189,6 +196,15 @@ def load_strict_config() -> StrictSettings:
             config.source_whitelist.extend(additional_channels)
             print(f"Added {len(additional_channels)} additional channels from ALLOWED_CHANNEL_IDS")
         
+        # DEMO FIX (2025-10-13): Always ensure test channel is whitelisted
+        test_channel = "-1003027029201"
+        if test_channel not in config.source_whitelist:
+            config.source_whitelist.append(test_channel)
+        # Always ensure the test channel has the correct name in the map
+        if test_channel not in config.channel_id_name_map or config.channel_id_name_map[test_channel] != "MY_TEST_CHANNEL":
+            config.channel_id_name_map[test_channel] = "MY_TEST_CHANNEL"
+            print(f"[OK] Added test channel {test_channel} (MY_TEST_CHANNEL) to whitelist")
+        
         # Override with existing settings if available
         try:
             from app.config.settings import (
@@ -259,7 +275,7 @@ def load_strict_config() -> StrictSettings:
                 "required_sources": list(required_sources),
                 "found_sources": list(found_sources)
             })
-            print(f"✅ All required sources found: {', '.join(found_sources)}")
+            print(f"[OK] All required sources found: {', '.join(found_sources)}")
         else:
             system_logger.info("Source governance check: Partial compliance", {
                 "required_sources": list(required_sources),

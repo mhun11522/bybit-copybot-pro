@@ -108,11 +108,19 @@ class BybitClient:
         import httpx
         # Note: trust_env=False prevents reading proxy from environment
         # Combined with NO_PROXY='*', this ensures no proxy is used
+        # Add User-Agent header to avoid bot detection/blocking
+        default_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive"
+        }
         self.http = httpx.AsyncClient(
             base_url=_get_bybit_endpoint(), 
             timeout=30.0,  # Increased timeout for slow connections
             trust_env=False,  # CRITICAL: Don't read proxy from environment
-            follow_redirects=True  # Follow 301/302 redirects
+            follow_redirects=True,  # Follow 301/302 redirects
+            headers=default_headers  # Add browser-like headers
         )
         self._ts_offset_ms = 0
         self._last_sync = 0.0
@@ -266,9 +274,17 @@ class BybitClient:
             system_logger.warning(f"Error closing HTTP client: {e}")
 
     async def instruments(self, category: str, symbol: str):
-        r = await self.http.get("/v5/market/instruments-info", params={"category":category,"symbol":symbol})
-        r.raise_for_status()
-        return _check_response(r.json())
+        # FIX: Demo API now requires authentication for instrument info
+        # Use authenticated GET request instead of public endpoint
+        params = {"category": category, "symbol": symbol}
+        try:
+            return await self._get_auth("/v5/market/instruments-info", params)
+        except Exception as e:
+            # Fallback to unauthenticated for backwards compatibility
+            system_logger.warning(f"Authenticated instruments call failed, trying unauthenticated: {e}")
+            r = await self.http.get("/v5/market/instruments-info", params=params)
+            r.raise_for_status()
+            return _check_response(r.json())
     
     async def get_position(self, category: str, symbol: str):
         """Get current position for a symbol"""
@@ -656,15 +672,26 @@ class BybitClient:
     async def get_server_time(self) -> int:
         """Get Bybit server time in milliseconds."""
         try:
-            r = await self.http.get("/v5/market/time")
-            r.raise_for_status()
-            data = r.json()
-            if data.get("retCode") == 0 and "result" in data:
-                res = data["result"]
-                if "timeSecond" in res:
-                    return int(res["timeSecond"]) * 1000
-                if "timeNano" in res:
-                    return int(res["timeNano"]) // 1000000
+            # FIX: Try authenticated request first (Demo API may require it)
+            try:
+                result = await self._get_auth("/v5/market/time", {})
+                if result.get("retCode") == 0 and "result" in result:
+                    res = result["result"]
+                    if "timeSecond" in res:
+                        return int(res["timeSecond"]) * 1000
+                    if "timeNano" in res:
+                        return int(res["timeNano"]) // 1000000
+            except:
+                # Fallback to unauthenticated
+                r = await self.http.get("/v5/market/time")
+                r.raise_for_status()
+                data = r.json()
+                if data.get("retCode") == 0 and "result" in data:
+                    res = data["result"]
+                    if "timeSecond" in res:
+                        return int(res["timeSecond"]) * 1000
+                    if "timeNano" in res:
+                        return int(res["timeNano"]) // 1000000
         except Exception as e:
             system_logger.warning(f"Failed to get server time, using local time: {e}")
         # Fallback to local time

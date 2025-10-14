@@ -1,3 +1,22 @@
+"""
+DEPRECATED - DO NOT USE
+
+CLIENT FIX (COMPLIANCE doc/10_12_2.md Lines 431-460):
+This file is DEPRECATED per client requirements.
+
+⚠️ WILL FAIL ON IMPORT - Legacy swedish_templates_v2.py is disabled ⚠️
+
+Use app/reports/scheduler_v2.py instead.
+See COMPLIANCE_ANALYSIS.md section 10.2 point 7.
+"""
+
+# CLIENT SPEC: This import will now fail due to swedish_templates_v2 being disabled
+# This is INTENTIONAL to prevent accidental use of deprecated code path
+from app.telegram.swedish_templates_v2 import get_swedish_templates  # ⚠️ Will raise RuntimeError
+
+# Code below is preserved for reference but will never execute
+# ============================================================================
+
 """Strict report scheduler with exact client timing requirements."""
 
 import asyncio
@@ -6,9 +25,28 @@ from typing import Dict, Any, List, Tuple
 from decimal import Decimal
 from app.core.strict_config import STRICT_CONFIG
 from app.core.logging import system_logger
-from app.telegram.swedish_templates_v2 import get_swedish_templates
 from app.telegram.output import send_message
 from app.storage.db import get_db_connection
+
+# ============================================================================
+# PRODUCTION LOCK - DO NOT USE THIS FILE
+# ============================================================================
+# CLIENT REQUIREMENT: Use app/reports/scheduler_v2.py instead
+# This file is DEPRECATED and uses legacy swedish_templates_v2.py
+# 
+# REASON: Client specification requires single template path via Engine.
+# This file bypasses the engine and uses legacy templates directly.
+# ============================================================================
+
+import os
+_IS_PRODUCTION = os.getenv("ENV", "PROD") == "PROD"
+
+if _IS_PRODUCTION:
+    raise RuntimeError(
+        "DEPRECATED: strict_scheduler.py is forbidden in production. "
+        "Use app/reports/scheduler_v2.py instead. "
+        "See doc/10_12_requirement.txt for details."
+    )
 
 class StrictReportScheduler:
     """Report scheduler with exact client timing requirements."""
