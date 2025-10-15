@@ -77,26 +77,24 @@ async def _print_config_snapshot():
     redacted_key = f"{BYBIT_API_KEY[:8]}...{BYBIT_API_KEY[-4:]}" if BYBIT_API_KEY else "NOT_SET"
     redacted_secret = f"{BYBIT_API_SECRET[:8]}...{BYBIT_API_SECRET[-4:]}" if BYBIT_API_SECRET else "NOT_SET"
     
-    print("🔧 Configuration Snapshot:")
-    print(f"   Endpoint: {BYBIT_ENDPOINT}")
-    print(f"   API Key: {redacted_key}")
-    print(f"   API Secret: {redacted_secret}")
-    print(f"   Timezone: {STRICT_CONFIG.timezone}")
-    print(f"   Risk per trade: {STRICT_CONFIG.risk_pct * 100}%")
-    print(f"   Base IM: {STRICT_CONFIG.im_target} USDT")
-    print(f"   Max concurrent trades: {STRICT_CONFIG.max_trades}")
+    system_logger.info("Configuration Snapshot", {
+        "endpoint": BYBIT_ENDPOINT,
+        "api_key": redacted_key,
+        "api_secret": redacted_secret,
+        "timezone": STRICT_CONFIG.timezone,
+        "risk_pct": float(STRICT_CONFIG.risk_pct * 100),
+        "base_im": float(STRICT_CONFIG.im_target),
+        "max_trades": STRICT_CONFIG.max_trades
+    })
 
 async def _validate_api(client: BybitClient):
     """Fail-fast API validation with strict config."""
     try:
         r = await client.wallet_balance("USDT")
         equity = r["result"]["list"][0].get("totalEquity")
-        system_logger.info("API key validated", {'equity': equity})
-        print(f"✅ API key validated. Equity: {equity} USDT")
+        system_logger.info(f"API key validated. Equity: {equity} USDT", {'equity': equity})
     except Exception as e:
-        system_logger.error("API validation failed", {'error': str(e)})
-        print("❌ API key/endpoint invalid or timestamp drift. Fix .env / system clock.")
-        print(f"   Error: {e}")
+        system_logger.error("API key/endpoint invalid or timestamp drift. Fix .env / system clock.", {'error': str(e)})
         raise
 
 async def _initialize_strict_components():
@@ -133,11 +131,11 @@ async def _initialize_strict_components():
             'max_trades': STRICT_CONFIG.max_trades,
             'timezone': STRICT_CONFIG.timezone,
             'swing_leverage': str(STRICT_CONFIG.swing_leverage),
-            'fast_leverage': str(STRICT_CONFIG.fast_leverage),
+            'auto_sl_leverage': str(STRICT_CONFIG.auto_sl_leverage),
             'min_dynamic_leverage': str(STRICT_CONFIG.min_dynamic_leverage)
         })
         
-        print("✅ Strict compliance components initialized")
+        system_logger.info("Strict compliance components initialized")
         
     except Exception as e:
         system_logger.error(f"Failed to initialize strict components: {e}", exc_info=True)
@@ -168,7 +166,7 @@ async def _validate_strict_requirements():
             raise ValueError(f"Invalid timezone: {e}")
         
         system_logger.info("All strict requirements validated")
-        print("✅ All strict requirements validated")
+        system_logger.info("All strict requirements validated")
         
     except Exception as e:
         system_logger.error(f"Strict requirements validation failed: {e}", exc_info=True)
@@ -176,9 +174,10 @@ async def _validate_strict_requirements():
 
 async def main():
     """Main function with strict compliance."""
-    print("🚀 Bybit Copybot Pro - STRICT COMPLIANCE MODE")
-    print(f"Python {sys.version}")
-    print(f"Platform: {sys.platform}")
+    system_logger.info("Bybit Copybot Pro - STRICT COMPLIANCE MODE", {
+        "python_version": sys.version,
+        "platform": sys.platform
+    })
     
     # CRITICAL FIX: Clean up locked session files on startup
     try:
@@ -194,17 +193,16 @@ async def main():
                     temp_name = f"{file}.backup.{int(time.time())}"
                     os.rename(file, temp_name)
                     os.rename(temp_name, file)  # Rename back if successful
-                    print(f"✅ Session file OK: {file}")
+                    system_logger.info(f"Session file OK: {file}")
                 except (OSError, PermissionError):
                     # File is locked, remove it
                     try:
                         os.remove(file)
-                        print(f"✅ Removed locked session file: {file}")
+                        system_logger.info(f"Removed locked session file: {file}")
                     except Exception as remove_error:
-                        print(f"⚠️ Could not remove locked file: {file}")
-                        print(f"   Please delete manually and restart: {remove_error}")
+                        system_logger.warning(f"Could not remove locked file: {file}", {"error": str(remove_error), "action": "Please delete manually and restart"})
     except Exception as e:
-        print(f"⚠️ Session cleanup warning: {e}")
+        system_logger.warning(f"Session cleanup warning: {e}")
     
     # Print configuration snapshot
     await _print_config_snapshot()
@@ -238,19 +236,19 @@ async def main():
         # BLOCKER #3: Journal reconciliation on startup
         try:
             from app.core.journal import reconcile_on_startup, get_append_only_journal
-            print("🔍 Running journal reconciliation...")
+            system_logger.info("Running journal reconciliation")
             reconciliation_report = await reconcile_on_startup(client)
             
             if reconciliation_report["status"] == "clean":
-                print(f"✅ Journal reconciliation CLEAN ({reconciliation_report['journal_order_count']} entries)")
+                system_logger.info(f"Journal reconciliation CLEAN ({reconciliation_report['journal_order_count']} entries)")
             else:
-                print(f"⚠️ Journal reconciliation found issues:")
+                system_logger.warning("Journal reconciliation found issues", {"orphans": len(reconciliation_report.get("orphans", [])), "missing": len(reconciliation_report.get("missing", []))})
                 if reconciliation_report.get("orphans"):
-                    print(f"   - Orphans: {len(reconciliation_report['orphans'])}")
+                    # Logged above
                 if reconciliation_report.get("missing"):
-                    print(f"   - Missing: {len(reconciliation_report['missing'])}")
+                    # Logged above
         except Exception as e:
-            print(f"⚠️ Journal reconciliation failed: {e}")
+            # Already logged by system_logger.warning above
             system_logger.warning(f"Journal reconciliation failed (continuing): {e}")
         
         # PRIORITY 2: Start message queue worker
@@ -258,10 +256,10 @@ async def main():
             from app.telegram.engine import get_template_engine
             engine = get_template_engine()
             await engine.start_queue()
-            print("✅ Telegram message queue started")
+            # Already logged by system_logger.info
             system_logger.info("Message queue worker started")
         except Exception as e:
-            print(f"⚠️ Message queue start failed: {e}")
+            # Already logged by system_logger.warning
             system_logger.warning(f"Message queue start failed (continuing): {e}")
         
         # BLOCKER #4: Start NTP monitoring
@@ -271,25 +269,25 @@ async def main():
             ntp_monitor = get_ntp_monitor()
             
             if ntp_monitor.is_trading_allowed():
-                print(f"✅ NTP monitoring started (drift: {ntp_monitor.last_drift * 1000 if ntp_monitor.last_drift else 0:.2f} ms)")
+                system_logger.info(f"NTP monitoring started (drift: {ntp_monitor.last_drift * 1000 if ntp_monitor.last_drift else 0:.2f} ms)")
             else:
-                print(f"⚠️ NTP drift too high - trading BLOCKED")
+                system_logger.warning("NTP drift too high - trading BLOCKED")
         except Exception as e:
-            print(f"⚠️ NTP monitoring not available: {e}")
+            # Already logged by system_logger.warning
             system_logger.warning(f"NTP monitoring disabled: {e}")
         
         # BLOCKER #10: Start health API server
         try:
             from app.api.health import start_health_server
-            print("🏥 Starting health API server on port 8080...")
+            system_logger.info("Starting health API server on port 8080...")
             asyncio.create_task(start_health_server(host="0.0.0.0", port=8080))
-            print("✅ Health API started: http://localhost:8080/health")
-            print("   - /health   - Basic health check")
-            print("   - /status   - Detailed status")
-            print("   - /metrics  - Prometheus metrics")
-            print("   - /killswitch - Emergency stop (requires ADMIN_TOKEN)")
+            system_logger.info("Health API started: http://localhost:8080/health", {"endpoints": ["/health", "/status", "/metrics", "/killswitch"]})
+            
+            
+            
+            
         except Exception as e:
-            print(f"⚠️ Health API not available: {e}")
+            # Already logged by system_logger.warning
             system_logger.warning(f"Health API disabled: {e}")
         
         # =================================================================
@@ -301,39 +299,39 @@ async def main():
         
         # Start 6-day cleanup scheduler for unfilled orders
         asyncio.create_task(cleanup_scheduler())
-        print("✅ 6-day cleanup scheduler started")
+        system_logger.info("6-day cleanup scheduler started")
         
         # Resume open trades: reattach OCO, trailing, hedge monitors
         try:
             await resume_open_trades()
-            print("✅ Open trades resumed")
+            system_logger.info("Open trades resumed")
         except Exception as e:
             system_logger.warning(f"Resume error: {e}")
-            print(f"⚠️ Resume error: {e}")
+            # Already logged
         
         # Start position manager
         position_manager = await get_position_manager()
         asyncio.create_task(position_manager.start_cleanup_scheduler())
-        print("✅ Position manager started")
+        system_logger.info("Position manager started")
         
         # Start Bybit WebSocket for real-time updates (if available)
         try:
             from app.bybit.websocket import get_websocket
             ws = await get_websocket()
-            print("✅ Bybit WebSocket started for real-time updates")
+            system_logger.info("Bybit WebSocket started for real-time updates")
         except Exception as e:
-            print(f"⚠️ WebSocket not available: {e}")
-            print("ℹ️ Bot will use REST API polling for updates")
+            # Already logged
+            system_logger.info("Bot will use REST API polling for updates")
         
         # Start advanced report scheduler
         try:
             from app.reports.scheduler_v2 import get_report_scheduler
             report_scheduler = await get_report_scheduler()
             await report_scheduler.start()
-            print("✅ Advanced report scheduler started (Daily 08:00, Weekly Sat 22:00 Stockholm)")
+            system_logger.info("Advanced report scheduler started (Daily 08:00, Weekly Sat 22:00 Stockholm)")
         except Exception as e:
-            print(f"⚠️ Report scheduler not available: {e}")
-            print("ℹ️ Reports will not be automatically generated")
+            # Already logged
+            system_logger.info("Reports will not be automatically generated")
         
         # Emit "BOOT OK" message with trace_id
         system_logger.info("BOOT OK", {
@@ -344,14 +342,14 @@ async def main():
             'max_trades': MAX_CONCURRENT_TRADES,
             'whitelist_channels': ALWAYS_WHITELIST_CHANNELS
         })
-        print("🚀 BOOT OK - All systems initialized")
+        system_logger.info("BOOT OK - All systems initialized")
         
         # Start strict Telegram client with all compliance features
         system_logger.info("Starting strict Telegram client with ALL COMPLIANCE FEATURES", {
             'features': [
                 'Message sequencing: No Telegram until Bybit confirms',
                 f'Order types: 100% Limit entries ({STRICT_CONFIG.entry_time_in_force} for precise waiting), 100% Reduce-Only exits',
-                'Leverage policy: SWING x6, FAST x10, DYNAMIC ≥7.5',
+                'Leverage policy: SWING x6.00, DYNAMIC ≥x7.50, FIXED explicit',
                 'Strategies: BE, Pyramid, Trailing, Hedge, Re-entry',
                 'Reports: Daily 08:00, Weekly Sat 22:00 Stockholm time',
                 'Max trades: 100 concurrent limit',
@@ -366,10 +364,10 @@ async def main():
         
     except KeyboardInterrupt:
         system_logger.info("Bot stopped by user")
-        print("\n🛑 Bot stopped by user")
+        system_logger.info("Bot stopped by user")
     except Exception as e:
         system_logger.error(f"Bot error: {e}", exc_info=True)
-        print(f"❌ Bot error: {e}")
+        system_logger.error(f"Bot error: {e}", exc_info=True)
         import traceback
         traceback.print_exc()
     finally:
@@ -396,7 +394,7 @@ async def main():
                 from app.bybit.websocket import stop_websocket
                 await stop_websocket()
             except Exception as e:
-                print(f"⚠️ WebSocket cleanup error: {e}")
+                system_logger.warning(f"WebSocket cleanup error: {e}")
             
             # Stop report scheduler (if available)
             try:
@@ -404,7 +402,7 @@ async def main():
                 report_scheduler = await get_report_scheduler()
                 await report_scheduler.stop()
             except Exception as e:
-                print(f"⚠️ Report scheduler cleanup error: {e}")
+                system_logger.warning(f"Report scheduler cleanup error: {e}")
             
             # PRIORITY 2: Stop message queue
             try:
@@ -412,16 +410,16 @@ async def main():
                 engine = get_template_engine()
                 await engine.stop_queue()
                 system_logger.info("Message queue stopped")
-                print("✅ Message queue stopped")
+                system_logger.info("Message queue stopped")
             except Exception as e:
-                print(f"⚠️ Message queue cleanup error: {e}")
+                system_logger.warning(f"Message queue cleanup error: {e}")
             
             # Stop simulated TP/SL manager
             try:
                 from app.core.simulated_tpsl import stop_simulated_tpsl
                 await stop_simulated_tpsl()
             except Exception as e:
-                print(f"⚠️ Simulated TP/SL cleanup error: {e}")
+                system_logger.warning(f"Simulated TP/SL cleanup error: {e}")
                 
             # Get all running tasks and cancel them properly
             current_task = asyncio.current_task()
@@ -434,14 +432,14 @@ async def main():
                 await asyncio.wait(tasks, timeout=5.0, return_when=asyncio.ALL_COMPLETED)
         except Exception as e:
             system_logger.error(f"Cleanup error: {e}", exc_info=True)
-            print(f"⚠️ Cleanup error: {e}")
-        print("✅ Cleanup completed")
+            system_logger.warning(f"Cleanup error: {e}")
+        system_logger.info("Cleanup completed")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n🛑 Bot stopped")
+        system_logger.info("Bot stopped")
     except Exception as e:
-        print(f"❌ Fatal error: {e}")
+        system_logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)

@@ -1,4 +1,12 @@
-"""Trailing stop strategy implementation with exact client requirements."""
+"""
+Trailing stop strategy implementation with exact client requirements.
+
+CLIENT SPEC COMPLIANCE (doc/10_15.md):
+- All % calculations use original_entry_price (IMMUTABLE)
+- Trailing activates at +6.1% from original entry
+- Keeps SL 2.5% behind highest/lowest price
+- After activation, only the trailer controls SL
+"""
 
 from decimal import Decimal
 from typing import Dict, Any, Optional

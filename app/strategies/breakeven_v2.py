@@ -1,4 +1,11 @@
-"""Breakeven strategy implementation with exact client requirements."""
+"""
+Breakeven strategy implementation with exact client requirements.
+
+CLIENT SPEC COMPLIANCE (doc/10_15.md):
+- All % calculations use original_entry_price (IMMUTABLE)
+- Breakeven activates at TP2 trigger (+2.3%)
+- Move SL to BE + 0.0015% offset for costs
+"""
 
 from decimal import Decimal
 from typing import Dict, Any
@@ -28,16 +35,24 @@ class BreakevenStrategyV2:
         self.trigger_pct = STRICT_CONFIG.pyramid_levels[1]["trigger"]  # Step 2: 2.3%
         self.offset_pct = STRICT_CONFIG.breakeven_offset  # 0.0015% offset for costs
     
-    async def check_and_activate(self, current_price: Decimal, avg_entry: Decimal) -> bool:
-        """Check if breakeven should be activated and activate it."""
+    async def check_and_activate(self, current_price: Decimal, original_entry: Decimal) -> bool:
+        """
+        Check if breakeven should be activated and activate it.
+        
+        CLIENT SPEC: Use original_entry_price (not avg_entry) for % calculations.
+        
+        Args:
+            current_price: Current market price
+            original_entry: Original entry price (IMMUTABLE from first fill)
+        """
         if self.activated:
             return True
         
-        # Calculate current gain percentage
+        # CLIENT SPEC: Calculate gain percentage from ORIGINAL entry price
         if self.direction == "BUY":
-            gain_pct = (current_price - avg_entry) / avg_entry * 100
+            gain_pct = (current_price - original_entry) / original_entry * 100
         else:  # SELL
-            gain_pct = (avg_entry - current_price) / avg_entry * 100
+            gain_pct = (original_entry - current_price) / original_entry * 100
         
         # Check if we've hit TP2 trigger
         if gain_pct >= self.trigger_pct:

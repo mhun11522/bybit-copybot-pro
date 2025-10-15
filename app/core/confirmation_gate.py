@@ -45,6 +45,11 @@ class ConfirmationGate:
         """
         Execute Bybit operation and wait for confirmation before sending Telegram.
         
+        CLIENT SPEC (doc/10_15.md Lines 343-346):
+        - No Telegram unless Bybit retCode == 0
+        - Timeline shows: BYBIT_REQUEST → BYBIT_ACK → TELEGRAM_SEND
+        - Include order_id, im_confirmed, leverage in timeline
+        
         Args:
             operation_id: Unique identifier for this operation
             bybit_operation: Async function that performs Bybit operation
@@ -55,18 +60,53 @@ class ConfirmationGate:
             True if confirmed and Telegram sent, False otherwise
         """
         try:
+            # CLIENT SPEC: Timeline logging - BYBIT_REQUEST
+            from app.core.timeline_logger import get_timeline_logger
+            timeline = get_timeline_logger()
+            
+            import time
+            request_ts = time.time()
+            
+            timeline.log_event("BYBIT_REQUEST", {
+                "operation_id": operation_id,
+                "timestamp": request_ts
+            })
+            
             system_logger.info(f"Starting confirmation gate for operation: {operation_id}")
             
             # Execute Bybit operation
             bybit_result = await bybit_operation()
             
+            ack_ts = time.time()
+            latency_ms = (ack_ts - request_ts) * 1000
+            
             # Check if Bybit operation was successful
             if not self._is_bybit_success(bybit_result):
+                # CLIENT SPEC: Timeline logging - BYBIT_NACK
+                timeline.log_event("BYBIT_NACK", {
+                    "operation_id": operation_id,
+                    "timestamp": ack_ts,
+                    "latency_ms": latency_ms,
+                    "ret_code": bybit_result.get('retCode'),
+                    "ret_msg": bybit_result.get('retMsg')
+                })
+                
                 system_logger.error(f"Bybit operation failed for {operation_id}", {
                     'operation_id': operation_id,
                     'bybit_result': bybit_result
                 })
                 return False
+            
+            # CLIENT SPEC: Timeline logging - BYBIT_ACK (retCode == 0)
+            timeline.log_event("BYBIT_ACK", {
+                "operation_id": operation_id,
+                "timestamp": ack_ts,
+                "latency_ms": latency_ms,
+                "ret_code": 0,
+                "order_id": bybit_result.get('result', {}).get('orderId'),
+                "im_confirmed": bybit_result.get('result', {}).get('positionIM'),
+                "leverage": bybit_result.get('result', {}).get('leverage')
+            })
             
             # Store confirmation data
             self._pending_confirmations[operation_id] = {
@@ -76,7 +116,16 @@ class ConfirmationGate:
             }
             
             # Send Telegram message after Bybit confirmation
+            telegram_ts = time.time()
             await telegram_callback(bybit_result)
+            
+            # CLIENT SPEC: Timeline logging - TELEGRAM_SEND
+            timeline.log_event("TELEGRAM_SEND", {
+                "operation_id": operation_id,
+                "timestamp": telegram_ts,
+                "latency_from_ack_ms": (telegram_ts - ack_ts) * 1000,
+                "total_latency_ms": (telegram_ts - request_ts) * 1000
+            })
             
             # Clean up
             if operation_id in self._pending_confirmations:
@@ -171,6 +220,18 @@ class ConfirmationGate:
             from app.bybit.client import get_bybit_client
             client = get_bybit_client()
             try:
+                # CLIENT SPEC: Set margin mode to ISOLATED (doc/requirement.txt Line 13)
+                system_logger.info(f"Setting ISOLATED margin mode for {symbol}")
+                try:
+                    margin_result = await client.set_margin_mode(
+                        STRICT_CONFIG.supported_categories[0], symbol, trade_mode=0,
+                        buy_leverage=str(int(leverage)), sell_leverage=str(int(leverage))
+                    )
+                    if margin_result.get('retCode') in [0, 110026]:
+                        system_logger.info(f"Margin mode ISOLATED for {symbol}")
+                except Exception as e:
+                    system_logger.warning(f"Margin mode setup: {e} (may already be set)")
+                
                 # Set leverage
                 await client.set_leverage(
                     STRICT_CONFIG.supported_categories[0], 

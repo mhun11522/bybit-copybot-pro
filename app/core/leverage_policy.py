@@ -39,20 +39,23 @@ class LeveragePolicy:
         """
         Validate leverage against client policy.
         
-        EXACT RULES:
+        CLIENT SPEC (doc/10_15.md):
         - SWING: exactly 6x (no variation)
-        - FAST: exactly 10x
         - DYNAMIC: ≥7.5x, ≤25x
+        - FIXED: explicit value (any valid leverage)
         - Forbidden gap: (6, 7.5) exclusive - MUST NOT exist
         """
         leverage_float = float(leverage)
         
         if mode == "SWING":
             return leverage_float == 6.0
-        elif mode == "FAST":
-            return leverage_float == 10.0
         elif mode == "DYNAMIC":
             return 7.5 <= leverage_float <= 25.0
+        elif mode == "FIXED":
+            # FIXED mode: explicit leverage, but must not be in forbidden gap
+            if 6.0 < leverage_float < 7.5:
+                return False  # Forbidden gap
+            return True
         else:
             return False
     
@@ -71,30 +74,37 @@ class LeveragePolicy:
         """
         Classify leverage according to CLIENT SPECIFICATION.
         
-        EXACT RULES (DO NOT MODIFY):
-        1. Missing SL → FAST x10
-        2. SWING mode → EXACTLY x6 (force, no computation)
-        3. FAST mode → EXACTLY x10
-        4. DYNAMIC mode → compute with bounds [7.5, 25], close forbidden gap
+        CLIENT SPEC (doc/10_15.md Lines 355-362):
+        1. SWING mode → EXACTLY x6.00 (no variation)
+        2. DYNAMIC mode → ≥7.5x with two decimals, compute with bounds [7.5, 25]
+        3. FIXED mode → explicit value, forbid values between 6 and 7.5
+        4. Missing SL → set auto-SL −2% from OEP and lock leverage x10 (safety case, NOT a mode)
         5. Default → DYNAMIC ≥7.5x
         
         Forbidden Gap Rule:
         - If computed leverage lands in (6, 7.5) → promote to 7.5x
         """
         if not has_sl:
-            # Missing SL → FAST x10
-            system_logger.info("Missing SL detected, forcing FAST x10 leverage")
-            return Decimal("10"), "FAST"
+            # CLIENT SPEC: Missing SL → auto-SL −2% + lock leverage x10 (safety case)
+            system_logger.warning("Missing SL detected, locking leverage at x10 for safety (CLIENT SPEC)")
+            # Note: Caller must also create auto-SL at −2% from OEP
+            return Decimal("10.00"), "FIXED"  # Treat as FIXED x10 (not a mode, just a safety lock)
         
         if mode_hint == "SWING":
-            # SWING mode → EXACTLY x6 (NO COMPUTATION, NO VARIATION)
-            system_logger.info("SWING mode: enforcing EXACTLY 6x leverage (client spec)")
-            return Decimal("6"), "SWING"
+            # SWING mode → EXACTLY x6.00 (NO COMPUTATION, NO VARIATION)
+            system_logger.info("SWING mode: enforcing EXACTLY 6.00x leverage (CLIENT SPEC)")
+            return Decimal("6.00"), "SWING"
         
-        if mode_hint == "FAST":
-            # FAST mode → EXACTLY x10
-            system_logger.info("FAST mode: enforcing EXACTLY 10x leverage (client spec)")
-            return Decimal("10"), "FAST"
+        if mode_hint == "FIXED" and raw_leverage:
+            # FIXED mode → explicit leverage (must not be in forbidden gap)
+            leverage = raw_leverage
+            if Decimal("6") < leverage < Decimal("7.5"):
+                system_logger.error(
+                    f"FIXED leverage {leverage}x in forbidden gap (6, 7.5) - REJECTED (CLIENT SPEC)"
+                )
+                raise ValueError(f"Forbidden leverage value: {leverage}x is between 6 and 7.5")
+            system_logger.info(f"FIXED mode: using explicit {leverage}x leverage")
+            return leverage, "FIXED"
         
         if mode_hint == "DYNAMIC" or not mode_hint:
             # Calculate dynamic leverage with strict bounds
@@ -156,8 +166,9 @@ class LeveragePolicy:
         else:
             dynamic_leverage = base_leverage
         
-        # Round to 1 decimal place
-        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.1'), rounding=ROUND_DOWN)
+        # CLIENT SPEC FIX: Round to 2 decimal places (was 1, violates client requirement)
+        # doc/requirement.txt Line 20: "Does the leverage have 2 decimal places on dynamic leverage?"
+        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
         
         # Enforce minimum (7.5x)
         dynamic_leverage = max(dynamic_leverage, DYN_MIN)

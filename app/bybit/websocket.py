@@ -5,13 +5,14 @@ import hmac
 import hashlib
 from typing import Callable, Dict, Optional
 from app.config.settings import BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_ENDPOINT, BYBIT_RECV_WINDOW
+from app.core.logging import system_logger
 
 try:
     import websockets
     WEBSOCKETS_AVAILABLE = True
 except ImportError:
     WEBSOCKETS_AVAILABLE = False
-    print("⚠️  WebSocket support not available - install websockets package for real-time updates")
+    system_logger.warning("WebSocket support not available - install websockets package for real-time updates")
 
 class BybitWebSocket:
     """
@@ -36,10 +37,14 @@ class BybitWebSocket:
         self.execution_handlers: Dict[str, Callable] = {}
         self.position_handlers: Dict[str, Callable] = {}
         
-        # Heartbeat
+        # CLIENT SPEC: Heartbeat (30s ping, pong timeout)
         self.last_pong = time.time()
-        self.ping_interval = 30  # Send ping every 30 seconds (increased from 20)
-        self.pong_timeout = 90   # Increased pong timeout to 90 seconds
+        self.ping_interval = 30  # CLIENT SPEC: 30 seconds
+        self.pong_timeout = 60   # Reconnect if no pong in 60s
+        
+        # CLIENT SPEC: Gap detection
+        from app.core.websocket_gap_detector import get_gap_detector
+        self.gap_detector = get_gap_detector()
         
     def _generate_auth_signature(self) -> dict:
         """Generate authentication payload for private WebSocket (Bybit V5)
@@ -69,24 +74,24 @@ class BybitWebSocket:
     async def connect(self):
         """Connect to Bybit WebSocket and authenticate"""
         if not WEBSOCKETS_AVAILABLE:
-            print("❌ WebSocket not available - install websockets package")
+            system_logger.error("WebSocket not available - install websockets package")
             return False
             
         try:
-            print(f"🔌 Connecting to Bybit WebSocket: {self.ws_url}")
+            system_logger.info(f"Connecting to Bybit WebSocket: {self.ws_url}")
             self.ws = await websockets.connect(self.ws_url, ping_interval=None)
-            print("✅ Bybit WebSocket connected")
+            system_logger.info("Bybit WebSocket connected", {"ws_url": self.ws_url})
             
             # Skip authentication for demo trading (not supported)
             if "demo" in BYBIT_ENDPOINT:
-                print("ℹ️  Demo trading - skipping WebSocket authentication (not supported)")
+                system_logger.info("Demo trading - skipping WebSocket authentication (not supported)")
                 return True
             
             # Authenticate for testnet/mainnet
             auth_payload = self._generate_auth_signature()
-            print(f"🔐 Sending auth: {auth_payload}")  # Debug log
+            system_logger.debug("Sending WebSocket authentication", {"op": "auth"})
             await self.ws.send(json.dumps(auth_payload))
-            print("🔐 Authentication sent, waiting for confirmation...")
+            system_logger.info("Authentication sent, waiting for confirmation")
             
             # Wait for auth response with timeout
             try:
@@ -94,21 +99,20 @@ class BybitWebSocket:
                 auth_response = json.loads(response)
                 
                 if auth_response.get("success"):
-                    print("✅ Bybit WebSocket authenticated successfully")
+                    system_logger.info("Bybit WebSocket authenticated successfully")
                     return True
                 else:
-                    print(f"❌ Bybit WebSocket authentication failed: {auth_response}")
-                    # Log more details for debugging
-                    print(f"🔍 Auth payload was: {auth_payload}")
-                    print(f"🔍 API Key length: {len(BYBIT_API_KEY)}")
-                    print(f"🔍 API Key starts with: {BYBIT_API_KEY[:8]}...")
+                    system_logger.error("Bybit WebSocket authentication failed", {
+                        "response": auth_response,
+                        "api_key_length": len(BYBIT_API_KEY)
+                    })
                     return False
             except asyncio.TimeoutError:
-                print("❌ WebSocket authentication timeout")
+                system_logger.error("WebSocket authentication timeout")
                 return False
                 
         except Exception as e:
-            print(f"❌ Bybit WebSocket connection failed: {e}")
+            system_logger.error(f"Bybit WebSocket connection failed: {e}", exc_info=True)
             return False
     
     async def subscribe_execution(self, symbol: str, handler: Callable):
@@ -125,7 +129,7 @@ class BybitWebSocket:
             }
             await self.ws.send(json.dumps(subscribe_msg))
             self.subscriptions.add("execution")
-            print(f"📡 Subscribed to execution updates for {symbol}")
+            system_logger.info(f"Subscribed to execution updates for {symbol}", {"symbol": symbol})
     
     async def subscribe_position(self, symbol: str, handler: Callable):
         """
@@ -141,30 +145,44 @@ class BybitWebSocket:
             }
             await self.ws.send(json.dumps(subscribe_msg))
             self.subscriptions.add("position")
-            print(f"📡 Subscribed to position updates for {symbol}")
+            system_logger.info(f"Subscribed to position updates for {symbol}", {"symbol": symbol})
     
     async def unsubscribe(self, symbol: str):
         """Remove handlers for a symbol"""
         self.execution_handlers.pop(symbol, None)
         self.position_handlers.pop(symbol, None)
-        print(f"📴 Unsubscribed from updates for {symbol}")
+        system_logger.info(f"Unsubscribed from updates for {symbol}", {"symbol": symbol})
     
     async def _handle_message(self, message: dict):
-        """Process incoming WebSocket messages"""
+        """
+        Process incoming WebSocket messages with gap detection.
         
+        CLIENT SPEC (doc/10_15.md Lines 86-91):
+        - Check sequence numbers for gaps
+        - On gap: pause → snapshot → replay → resume
+        """
         # Handle pong responses
         if message.get("op") == "pong":
             self.last_pong = time.time()
+            self.gap_detector.record_pong()  # CLIENT SPEC: Track heartbeat
             return
         
         # Handle subscription confirmations
         if message.get("op") == "subscribe":
             if message.get("success"):
-                print(f"✅ Subscription confirmed: {message.get('ret_msg', 'OK')}")
+                system_logger.info(f"Subscription confirmed: {message.get('ret_msg', 'OK')}")
             return
         
-        # Handle execution updates (order fills)
+        # CLIENT SPEC: Check for sequence gaps
         topic = message.get("topic", "")
+        if topic:
+            gap_detected = await self.gap_detector.check_message(topic, message)
+            if gap_detected:
+                # Gap recovery initiated - message processing paused
+                system_logger.warning(f"Gap detected on {topic}, recovery initiated")
+                return
+        
+        # Handle execution updates (order fills)
         if topic == "execution":
             data = message.get("data", [])
             for execution in data:
@@ -178,7 +196,7 @@ class BybitWebSocket:
                     try:
                         await handler(execution)
                     except Exception as e:
-                        print(f"⚠️  Execution handler error for {symbol}: {e}")
+                        system_logger.error(f"Execution handler error for {symbol}: {e}")
         
         # Handle position updates
         elif topic == "position":
@@ -191,29 +209,40 @@ class BybitWebSocket:
                     try:
                         await handler(position)
                     except Exception as e:
-                        print(f"⚠️  Position handler error for {symbol}: {e}")
+                        system_logger.error(f"Position handler error for {symbol}: {e}")
     
     async def _heartbeat_loop(self):
-        """Send periodic pings to keep connection alive"""
+        """
+        Send periodic pings to keep connection alive.
+        
+        CLIENT SPEC (doc/10_15.md Lines 90-91):
+        - Ping every 30s
+        - Reconnect on pong timeout with snapshot flow
+        """
         while self.running and self.ws:
             try:
-                # Check if connection is closed (some websocket versions don't have .closed attribute)
+                # Check if connection is closed
                 if hasattr(self.ws, 'closed') and self.ws.closed:
                     break
                 
                 await asyncio.sleep(self.ping_interval)
                 
-                # Send ping
+                # CLIENT SPEC: Send ping
                 ping_msg = {"op": "ping"}
                 await self.ws.send(json.dumps(ping_msg))
+                self.gap_detector.record_ping()  # Track ping sent
                 
-                # Check if we received pong recently
-                if time.time() - self.last_pong > self.pong_timeout:
-                    print(f"⚠️  No pong received in {self.pong_timeout}s, reconnecting...")
+                # CLIENT SPEC: Check pong timeout
+                if self.gap_detector.is_pong_timeout():
+                    system_logger.warning(
+                        f"No pong received in {self.pong_timeout}s, reconnecting with snapshot...",
+                        {"pong_timeout_seconds": self.pong_timeout}
+                    )
+                    # Reconnect with snapshot flow
                     await self.reconnect()
                     
             except Exception as e:
-                print(f"⚠️  Heartbeat error: {e}")
+                system_logger.error(f"Heartbeat error: {e}")
                 break
     
     async def _receive_loop(self):
@@ -225,18 +254,28 @@ class BybitWebSocket:
                 await self._handle_message(message)
                 
             except websockets.exceptions.ConnectionClosed:
-                print("⚠️  WebSocket connection closed")
+                system_logger.warning("WebSocket connection closed")
                 if self.running:
                     await self.reconnect()
                 break
             except Exception as e:
-                print(f"⚠️  WebSocket receive error: {e}")
+                system_logger.error(f"WebSocket receive error: {e}", exc_info=True)
                 if self.running:
                     await asyncio.sleep(1)
     
     async def reconnect(self):
-        """Reconnect to WebSocket and restore subscriptions"""
-        print("🔄 Reconnecting to Bybit WebSocket...")
+        """
+        Reconnect to WebSocket and restore subscriptions.
+        
+        CLIENT SPEC (doc/10_15.md Lines 88-91):
+        - Fetch REST snapshot on reconnect
+        - Restore subscriptions
+        - Resume with consistent state
+        """
+        system_logger.info("Reconnecting to Bybit WebSocket with snapshot flow...")
+        
+        # CLIENT SPEC: Step 1 - Fetch snapshot before reconnecting
+        snapshot = await self.gap_detector.fetch_snapshot()
         
         # Store current subscriptions
         old_execution_handlers = self.execution_handlers.copy()
@@ -249,21 +288,25 @@ class BybitWebSocket:
             except Exception as e:
                 system_logger.warning(f"Error closing WebSocket: {e}")
         
-        # Wait a bit before reconnecting
+        # Wait before reconnecting
         await asyncio.sleep(2)
         
-        # Reconnect
+        # CLIENT SPEC: Step 2 - Reconnect
         if await self.connect():
-            # Restore subscriptions
+            # CLIENT SPEC: Step 3 - Restore subscriptions
             for symbol, handler in old_execution_handlers.items():
                 await self.subscribe_execution(symbol, handler)
             
             for symbol, handler in old_position_handlers.items():
                 await self.subscribe_position(symbol, handler)
             
-            print("✅ WebSocket reconnected and subscriptions restored")
+            system_logger.info("WebSocket reconnected and subscriptions restored", {
+                "snapshot_fetched": snapshot is not None,
+                "execution_handlers": len(old_execution_handlers),
+                "position_handlers": len(old_position_handlers)
+            })
         else:
-            print("❌ Reconnection failed")
+            system_logger.error("Reconnection failed")
     
     async def start(self):
         """Start WebSocket connection and message processing"""
@@ -280,7 +323,7 @@ class BybitWebSocket:
     
     async def stop(self):
         """Stop WebSocket connection"""
-        print("🛑 Stopping Bybit WebSocket...")
+        system_logger.info("Stopping Bybit WebSocket")
         self.running = False
         
         if self.ws:
@@ -292,7 +335,7 @@ class BybitWebSocket:
         self.execution_handlers.clear()
         self.position_handlers.clear()
         self.subscriptions.clear()
-        print("✅ Bybit WebSocket stopped")
+        system_logger.info("Bybit WebSocket stopped")
 
 
 # Global WebSocket instance

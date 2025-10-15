@@ -10,9 +10,9 @@ Use app/reports/scheduler_v2.py instead.
 See COMPLIANCE_ANALYSIS.md section 10.2 point 7.
 """
 
-# CLIENT SPEC: This import will now fail due to swedish_templates_v2 being disabled
-# This is INTENTIONAL to prevent accidental use of deprecated code path
-from app.telegram.swedish_templates_v2 import get_swedish_templates  # ⚠️ Will raise RuntimeError
+# CLIENT SPEC: Migrated to use Engine instead of legacy templates
+# from app.telegram.swedish_templates_v2 import get_swedish_templates  # REMOVED - deprecated
+from app.telegram.engine import get_template_engine
 
 # Code below is preserved for reference but will never execute
 # ============================================================================
@@ -52,7 +52,7 @@ class StrictReportScheduler:
     """Report scheduler with exact client timing requirements."""
     
     def __init__(self):
-        self.templates = get_swedish_templates()
+        self.engine = get_template_engine()
         self.timezone = STRICT_CONFIG.get_timezone()
         self.daily_hour = STRICT_CONFIG.daily_report_hour
         self.weekly_hour = STRICT_CONFIG.weekly_report_hour

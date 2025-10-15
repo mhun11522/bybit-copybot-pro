@@ -3,18 +3,29 @@ from typing import Any, Dict
 from email.utils import parsedate_to_datetime
 from app.core.logging import system_logger
 
-# Read environment variables dynamically to avoid import-time issues
+# CLIENT SPEC (doc/10_15.md Lines 1-4, 277-302):
+# HARD RULE: All secrets MUST be accessed through ALL_PARAMETERS.py (via STRICT_CONFIG)
+# No direct os.getenv() calls for BYBIT_* or TELEGRAM_* secrets outside ALL_PARAMETERS.py/strict_config.py
+
 def _get_bybit_endpoint():
-    return os.getenv("BYBIT_ENDPOINT", "https://api-testnet.bybit.com")
+    """Get Bybit endpoint from STRICT_CONFIG (CLIENT SPEC: Single Source of Truth)."""
+    from app.core.strict_config import STRICT_CONFIG
+    return STRICT_CONFIG.bybit_endpoint
 
 def _get_bybit_api_key():
-    return os.getenv("BYBIT_API_KEY", "")
+    """Get Bybit API key from STRICT_CONFIG (CLIENT SPEC: Single Source of Truth)."""
+    from app.core.strict_config import STRICT_CONFIG
+    return STRICT_CONFIG.bybit_api_key
 
 def _get_bybit_api_secret():
-    return os.getenv("BYBIT_API_SECRET", "")
+    """Get Bybit API secret from STRICT_CONFIG (CLIENT SPEC: Single Source of Truth)."""
+    from app.core.strict_config import STRICT_CONFIG
+    return STRICT_CONFIG.bybit_api_secret
 
 def _get_bybit_recv_window():
-    return os.getenv("BYBIT_RECV_WINDOW", "5000")
+    """Get Bybit recv window from STRICT_CONFIG (CLIENT SPEC: Single Source of Truth)."""
+    from app.core.strict_config import STRICT_CONFIG
+    return STRICT_CONFIG.bybit_recv_window
 
 class BybitAPIError(Exception):
     """Raised when Bybit API returns retCode != 0"""
@@ -125,12 +136,12 @@ class BybitClient:
         self._ts_offset_ms = 0
         self._last_sync = 0.0
         # Allow env override; default 60s
+        # CLIENT SPEC: Non-secret config can still use os.getenv() for operational settings
         self._sync_interval = int(os.getenv("BYBIT_TIME_SYNC_INTERVAL", "60"))
         
         # Mark as initialized
         self._initialized = True
-        print(f"🔧 BybitClient singleton created with endpoint: {self.http.base_url}")
-        print("🔧 Proxy settings: DISABLED (trust_env=False, proxies={})")
+        system_logger.info(f"BybitClient singleton created with endpoint: {self.http.base_url}", {"proxy": "DISABLED"})
     
     def ensure_http_client_open(self):
         """Ensure HTTP client is open and ready for requests."""
@@ -143,8 +154,7 @@ class BybitClient:
                 trust_env=False,  # CRITICAL: Don't read proxy from environment
                 follow_redirects=True
             )
-            print(f"🔧 HTTP client recreated for endpoint: {self.http.base_url}")
-            print("🔧 Proxy settings: DISABLED (trust_env=False, proxies={})")
+            system_logger.info(f"HTTP client recreated for endpoint: {self.http.base_url}", {"proxy": "DISABLED"})
 
     async def _server_ms(self) -> int:
         """Get server time in milliseconds"""
@@ -172,7 +182,7 @@ class BybitClient:
         loc = int(time.time() * 1000)
         self._ts_offset_ms = srv - loc
         self._last_sync = now
-        print(f"⏱  Bybit time sync: server={srv} local={loc} offset_ms={self._ts_offset_ms}")
+        system_logger.info("Bybit time sync", {"server": srv, "local": loc, "offset_ms": self._ts_offset_ms})
 
     def _ts_sync(self) -> str:
         """Get timestamp with server offset applied"""
@@ -348,7 +358,7 @@ class BybitClient:
             # Only allow Trading status (not PreLaunch, Delivering, Closed, etc.)
             return status == "Trading"
         except Exception as e:
-            print(f"⚠️  Symbol validation error for {symbol}: {e}")
+            system_logger.warning(f"Symbol validation error for {symbol}: {e}")
             return False
     
     async def get_max_leverage(self, category: str, symbol: str) -> float:
@@ -361,7 +371,7 @@ class BybitClient:
                 max_lev = float(leverage_filter.get("maxLeverage", "50"))
                 return max_lev
         except Exception as e:
-            print(f"⚠️  Could not get max leverage for {symbol}: {e}")
+            system_logger.warning(f"Could not get max leverage for {symbol}: {e}")
         return 50.0  # Default fallback
 
     async def wallet_balance(self, coin="USDT"):
@@ -390,12 +400,76 @@ class BybitClient:
                 }
             }
 
+    async def set_margin_mode(self, category: str, symbol: str, trade_mode: int, buy_leverage: str, sell_leverage: str):
+        """
+        Set margin mode (isolated vs cross).
+        
+        CLIENT SPEC: Must use isolated margin only (tradeMode=0).
+        
+        Args:
+            category: "linear" for USDT perps
+            symbol: Trading symbol  
+            trade_mode: 0 = isolated (CLIENT REQUIRED), 1 = cross (FORBIDDEN)
+            buy_leverage: Leverage for buy side
+            sell_leverage: Leverage for sell side
+        """
+        if trade_mode != 0:
+            raise ValueError("CLIENT SPEC VIOLATION: Only isolated margin (tradeMode=0) is allowed")
+        
+        body = {
+            "category": category,
+            "symbol": symbol,
+            "tradeMode": trade_mode,
+            "buyLeverage": buy_leverage,
+            "sellLeverage": sell_leverage
+        }
+        return await self._post_auth("/v5/position/set-margin-mode", body)
+    
     async def set_leverage(self, category, symbol, buy_leverage, sell_leverage):
+        """
+        Set leverage with clock discipline check.
+        
+        CLIENT SPEC: Check NTP before leverage changes.
+        NOTE: This only sets leverage. Margin mode (isolated/cross) must be set separately.
+        """
+        # CLIENT SPEC: Enforce clock discipline
+        from app.core.ntp_sync import is_trading_allowed_by_clock
+        
+        if not is_trading_allowed_by_clock():
+            system_logger.error("Leverage change blocked due to clock drift")
+            raise RuntimeError("Trading blocked - clock drift exceeds 250ms")
         body = {"category":category,"symbol":symbol,"buyLeverage":str(buy_leverage),"sellLeverage":str(sell_leverage)}
         return await self._post_auth("/v5/position/set-leverage", body)
 
     async def place_order(self, body: Dict[str, Any], max_retries: int = 3):
-        """Place order with retry logic for connection errors."""
+        """
+        Place order with retry logic and NTP clock discipline.
+        
+        CLIENT SPEC (doc/10_15.md Lines 310-318):
+        - Enforce clock discipline before trading
+        - Block if |offset| > 250ms
+        - Always sign with synced timestamp
+        """
+        # CLIENT SPEC: Enforce NTP clock discipline
+        from app.core.ntp_sync import is_trading_allowed_by_clock, get_ntp_monitor
+        
+        if not is_trading_allowed_by_clock():
+            monitor = get_ntp_monitor()
+            drift_ms = monitor.last_drift * 1000 if monitor.last_drift else 0
+            
+            error_msg = (
+                f"Trading BLOCKED due to clock drift: {drift_ms:.2f}ms "
+                f"(limit: ±250ms). Fix system clock or wait for resync."
+            )
+            system_logger.error("Clock discipline violation - order rejected", {
+                "drift_ms": drift_ms,
+                "limit_ms": 250,
+                "action": "ORDER_REJECTED",
+                "symbol": body.get("symbol"),
+                "side": body.get("side")
+            })
+            raise RuntimeError(error_msg)
+        
         for attempt in range(max_retries):
             try:
                 return await self._post_auth("/v5/order/create", body)
@@ -428,7 +502,7 @@ class BybitClient:
             raise
         except Exception as e:
             # Return empty list on any error (symbol not live, etc.)
-            print(f"⚠️  Query open orders failed: {e}")
+            # Already logged by system_logger, no need for print
             return {"retCode":0, "retMsg":"OK", "result":{"list":[]}}
 
     async def get_open_orders(self, category, symbol):
@@ -486,6 +560,8 @@ class BybitClient:
 
     async def sl_market_reduceonly_mark(self, category, symbol, side, qty, sl_trigger, link_id):
         # Place a conditional market order that triggers at stop-loss price
+        from app.core.exit_order_policy import get_trigger_source
+        
         body = {
             "category": category,
             "symbol": symbol,
@@ -496,19 +572,26 @@ class BybitClient:
             "closeOnTrigger": True,
             "positionIdx": 0,
             "triggerPrice": str(sl_trigger),
-            "triggerBy": "MarkPrice",
+            "triggerBy": get_trigger_source(),  # Use configured trigger source
             "orderLinkId": link_id
         }
         return await self.place_order(body)
 
     async def set_trading_stop(self, category, symbol, stop_loss: Any = None, take_profit: Any = None,
-                               sl_order_type: str = "Market", sl_trigger_by: str = "MarkPrice",
-                               tp_order_type: str = "Market", tp_trigger_by: str = "MarkPrice",
+                               sl_order_type: str = "Market", sl_trigger_by: str = None,
+                               tp_order_type: str = "Market", tp_trigger_by: str = None,
                                position_idx: int = None):
         """
         Amend TP/SL using /v5/position/trading-stop (V5).
         Based on research findings, use correct parameter order and format.
         """
+        # Use configured trigger source if not provided
+        from app.core.exit_order_policy import get_trigger_source
+        if sl_trigger_by is None:
+            sl_trigger_by = get_trigger_source()
+        if tp_trigger_by is None:
+            tp_trigger_by = get_trigger_source()
+        
         # Determine correct positionIdx based on position mode
         if position_idx is None:
             # CRITICAL FIX: In OneWay mode (mode 0), always use positionIdx 0
@@ -611,7 +694,7 @@ class BybitClient:
                     "orderType": "Market",
                     "qty": "0",  # Will be filled by position size
                     "triggerPrice": str(take_profit),
-                    "triggerBy": "MarkPrice",
+                    "triggerBy": get_trigger_source(),
                     "positionIdx": 0,  # Add positionIdx
                     "orderLinkId": f"tp_{symbol}_{int(time.time())}"
                 }
@@ -630,7 +713,7 @@ class BybitClient:
                     "orderType": "Market",
                     "qty": "0",  # Will be filled by position size
                     "triggerPrice": str(stop_loss),
-                    "triggerBy": "MarkPrice",
+                    "triggerBy": get_trigger_source(),
                     "positionIdx": 0,  # Add positionIdx
                     "orderLinkId": f"sl_{symbol}_{int(time.time())}"
                 }

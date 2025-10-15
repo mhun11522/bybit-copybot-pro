@@ -52,7 +52,12 @@ def breaker_reset():
         _BREAKER["open"] = False
         _BREAKER["fail_count"] = 0
         _BREAKER["until"] = 0.0
-        print("✅ Circuit breaker FORCE RESET - trading resumed")
+        system_logger.info("Circuit breaker FORCE RESET - trading resumed", {
+            "is_open": False,
+            "fail_count": 0
+        })
     elif _BREAKER["fail_count"] > 0:
         _BREAKER["fail_count"] -= 1
-        print(f"✅ Circuit breaker fail count decremented to {_BREAKER['fail_count']}")
+        system_logger.info(f"Circuit breaker fail count decremented to {_BREAKER['fail_count']}", {
+            "fail_count": _BREAKER['fail_count']
+        })

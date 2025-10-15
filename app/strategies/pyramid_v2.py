@@ -1,4 +1,16 @@
-"""Pyramid strategy implementation with exact client requirements."""
+"""
+Pyramid strategy implementation with exact client requirements.
+
+CLIENT SPEC COMPLIANCE (doc/10_15.md Lines 365-377):
+- All triggers calculated from original_entry_price (IMMUTABLE)
+- +1.5%: IM check = 20 USDT
+- +2.3%: SL → BE + 0.0015%
+- +2.4%: Leverage → max (LEVERAGE-ONLY, no qty/IM) - "Pyramid Step 4" in templates
+- +2.5%: IM → 40 USDT total
+- +4.0%: IM → 60; +6.0%: IM → 80; +8.6%: IM → 100
+
+CRITICAL: +2.4% step MUST be leverage-only (forbid qty_add/im_add per CLIENT SPEC)
+"""
 
 from decimal import Decimal
 from typing import Dict, Any
@@ -9,7 +21,13 @@ from app.telegram.engine import render_template
 from app.core.confirmation_gate import ConfirmationGate
 
 class PyramidStrategyV2:
-    """Pyramid strategy with exact client requirements."""
+    """
+    Pyramid strategy with exact client requirements.
+    
+    Step numbering harmonization (CLIENT SPEC):
+    - Code index 2 (+2.4% leverage-only) = "Pyramid Step 4" in templates
+    - This ensures template messages match code behavior
+    """
     
     def __init__(self, trade_id: str, symbol: str, direction: str, original_entry: Decimal, channel_name: str):
         self.trade_id = trade_id
@@ -60,15 +78,81 @@ class PyramidStrategyV2:
         return False
     
     async def _activate_level(self, level_pct: Decimal, config: Dict[str, Any], gain_pct: Decimal):
-        """Activate a pyramid level based on action type."""
+        """
+        Activate a pyramid level based on action type.
+        
+        CLIENT SPEC: Enforces leverage-only constraint at +2.4% step.
+        """
         try:
             level_num = len(self.activated_levels) + 1
             action = config.get("action", "")
             
+            # CLIENT SPEC VALIDATION: At +2.4%, ONLY leverage changes allowed
+            # This is called "Pyramid Step 4" in Telegram templates (doc/requirement.txt Line 10)
+            if level_pct == Decimal("2.4"):
+                if action != "set_full_leverage":
+                    error_msg = (
+                        f"Pyramid +2.4% (Template 'Step 4') MUST be leverage-only. "
+                        f"Found action: {action}. "
+                        f"CLIENT SPEC: doc/requirement.txt Lines 33-41"
+                    )
+                    system_logger.error(
+                        f"CLIENT SPEC VIOLATION: +2.4% step must be leverage-only",
+                        {
+                            "symbol": self.symbol,
+                            "trigger": "+2.4%",
+                            "template_name": "Pyramid Step 4",
+                            "action": action,
+                            "expected": "set_full_leverage",
+                            "max_leverage": "50x"
+                        }
+                    )
+                    raise ValueError(error_msg)
+                
+                # Enforce max leverage cap of 50x for this step
+                leverage_cap = config.get("leverage_cap", Decimal("50"))
+                if leverage_cap > Decimal("50"):
+                    system_logger.warning(
+                        f"Leverage cap {leverage_cap} exceeds Step 4 max (50x), clamping",
+                        {"symbol": self.symbol, "requested": str(leverage_cap), "capped": "50"}
+                    )
+                    config["leverage_cap"] = Decimal("50")
+            
             success = False
             
-            if action == "im_total":
+            if action == "im_check":
+                # Step 1: Check that IM is 20 USDT if any TP has been hit
+                # This is a validation step, not an action
+                target_im = config.get("target_im", 20)
+                
+                # Fetch current IM from Bybit
+                from app.core.confirmation_gate import get_confirmation_gate
+                gate = get_confirmation_gate()
+                im_confirmed = await gate._fetch_confirmed_im(self.symbol)
+                
+                if im_confirmed < Decimal(str(target_im)):
+                    system_logger.warning(
+                        f"Pyramid Step 1: IM check failed",
+                        {
+                            "symbol": self.symbol,
+                            "current_im": float(im_confirmed),
+                            "expected_im": target_im
+                        }
+                    )
+                else:
+                    system_logger.info(
+                        f"Pyramid Step 1: IM check passed",
+                        {
+                            "symbol": self.symbol,
+                            "current_im": float(im_confirmed),
+                            "expected_im": target_im
+                        }
+                    )
+                success = True
+            
+            elif action == "im_total":
                 # Steps 1, 4, 5, 6, 7: IM increased to target total
+                # CLIENT SPEC: This action NOT allowed at +2.4%
                 target_im = config.get("target_im", Decimal("20"))
                 success = await self._update_position_size_to_total_im(target_im)
                 
@@ -77,11 +161,13 @@ class PyramidStrategyV2:
                 success = await self._move_sl_to_breakeven()
                 
             elif action == "set_full_leverage":
-                # Step 3: +2.4%: Set full leverage (ETH=50x cap, others=instrument max)
+                # Step 3 (code) / Step 4 (templates): +2.4%: LEVERAGE-ONLY
+                # CLIENT SPEC: ETH=50x cap, others=instrument max
                 success = await self._set_full_leverage()
                 
             elif action == "add_im":
                 # Legacy action name - treat as im_total
+                # CLIENT SPEC: This action NOT allowed at +2.4%
                 target_im = config.get("target_im", Decimal("20"))
                 success = await self._update_position_size_to_total_im(target_im)
             
@@ -233,11 +319,20 @@ class PyramidStrategyV2:
     
     async def _set_full_leverage(self) -> bool:
         """
-        Step 3: Set full leverage (CLIENT SPEC).
+        Pyramid +2.4%: Set full leverage (LEVERAGE-ONLY, NO qty/IM changes).
+        
+        CLIENT SPEC (doc/10_15.md Lines 365-377):
+        - This is the "Pyramid Step 4" referred to in templates (leverage-only step)
+        - +2.4%: Leverage → max (to x50); RECOMPUTE position
+        - CRITICAL: ONLY changes leverage, NEVER adds qty or IM
+        - Templates require: "Pyramid Step 4" = leverage-only (forbid qty_add/im_add)
         
         RULES:
         - ETH: Set to 50x (capped by instrument max if lower)
         - Other symbols: Set to instrument max
+        - NO qty changes
+        - NO IM additions
+        - Recompute position with new leverage (automatic by Bybit)
         """
         try:
             from app.core.leverage_policy import LeveragePolicy
@@ -249,11 +344,15 @@ class PyramidStrategyV2:
             if "ETH" in self.symbol.upper():
                 # ETH: min(50, instrument_max)
                 target_leverage = min(Decimal("50"), instrument_max)
-                system_logger.info(f"ETH pyramid step 3: setting leverage to {target_leverage}x (cap=50x, instrument_max={instrument_max}x)")
+                system_logger.info(f"ETH pyramid +2.4% (leverage-only): setting leverage to {target_leverage}x (cap=50x, instrument_max={instrument_max}x)")
             else:
                 # Other symbols: use instrument max
                 target_leverage = instrument_max
-                system_logger.info(f"Pyramid step 3: setting leverage to instrument max {target_leverage}x for {self.symbol}")
+                system_logger.info(f"Pyramid +2.4% (leverage-only): setting leverage to instrument max {target_leverage}x for {self.symbol}")
+            
+            # CRITICAL CLIENT SPEC ENFORCEMENT:
+            # This step ONLY changes leverage - no qty add, no IM add
+            # Bybit will automatically recompute position with new leverage
             
             # Set leverage via Bybit API
             result = await self.bybit.set_leverage(
@@ -265,7 +364,17 @@ class PyramidStrategyV2:
             
             # Check for success (retCode 0 or 110043 "leverage not modified")
             if result.get('retCode') in [0, 110043]:
-                system_logger.info(f"Full leverage set to {target_leverage}x for {self.symbol}")
+                system_logger.info(
+                    f"Leverage-only step complete: {target_leverage}x for {self.symbol}",
+                    {
+                        "symbol": self.symbol,
+                        "trigger": "+2.4%",
+                        "new_leverage": str(target_leverage),
+                        "qty_added": "0",  # NEVER adds qty
+                        "im_added": "0",   # NEVER adds IM
+                        "action": "leverage_only"
+                    }
+                )
                 return True
             else:
                 system_logger.error(f"Failed to set full leverage: {result}")

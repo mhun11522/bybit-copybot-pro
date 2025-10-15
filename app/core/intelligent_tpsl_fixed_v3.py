@@ -17,6 +17,11 @@ class IntelligentTPSLHandlerFixed:
         self.simulated_manager = get_simulated_tpsl_manager()
         self.initialized = False
 
+    def _get_trigger_source(self) -> str:
+        """Get configured trigger source from STRICT_CONFIG."""
+        from app.core.exit_order_policy import get_trigger_source
+        return get_trigger_source()
+    
     async def initialize(self):
         if not self.initialized:
             self._client = get_bybit_client()
@@ -249,7 +254,7 @@ class IntelligentTPSLHandlerFixed:
                     symbol=symbol,
                     stop_loss=sl_price,  # Only SL, no TP!
                     sl_order_type="Market",
-                    sl_trigger_by="MarkPrice",
+                    sl_trigger_by=None,  # Will use configured trigger source
                     position_idx=position_idx
                 )
                 
@@ -296,7 +301,7 @@ class IntelligentTPSLHandlerFixed:
                             "orderType": "Market",
                             "qty": str(tp_qty),  # ✅ PARTIAL quantity, not full position!
                             "triggerPrice": str(tp_price),
-                            "triggerBy": "MarkPrice",
+                            "triggerBy": self._get_trigger_source(),
                             "triggerDirection": trigger_direction,
                             "reduceOnly": True,
                             "closeOnTrigger": False,  # ✅ CRITICAL: False for partial close!

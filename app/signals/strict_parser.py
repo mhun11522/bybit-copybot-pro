@@ -216,13 +216,11 @@ class StrictSignalParser:
             r'Cross\s*\((\d+\.?\d*)x\)',  # Cross (12.5x) format
         ]
         
-        # Mode patterns
+        # Mode patterns (CLIENT SPEC: SWING, DYNAMIC, FIXED only)
         self.mode_patterns = {
             'SWING': [r'\b(SWING|Swing|swing)\b'],
-            'FAST': [r'\b(FAST|Fast|fast)\b'],
             'DYNAMIC': [r'\b(DYNAMIC|Dynamic|dynamic)\b'],
-            'SCALP': [r'\b(SCALP|Scalp|scalp)\b'],
-            'SCALPING': [r'\b(SCALPING|Scalping|scalping)\b'],
+            'FIXED': [r'\b(FIXED|Fixed|fixed)\b'],
         }
     
     async def parse_signal(self, message: str, channel_name: str) -> Optional[Dict[str, Any]]:
@@ -233,8 +231,8 @@ class StrictSignalParser:
         - Must have: symbol, side (LONG/SHORT), ≥1 entry, ≥1 TP or SL
         - Parse up to 2 entries and TP1..TP4, SL, leverage if present
         - If exactly 1 entry, synthesize entry2 = entry ±0.1% in trade direction
-        - Mode classification: SWING=x6, FAST=x10, else DYNAMIC≥7.5
-        - Missing SL → set SL = entry ±2% adverse direction, force FAST x10
+        - Mode classification: SWING=x6.00, DYNAMIC≥x7.50, FIXED=explicit
+        - Missing SL → set auto-SL = entry ±2% adverse direction + lock leverage x10 (CLIENT SPEC)
         """
         try:
             message_upper = message.upper()
@@ -411,7 +409,7 @@ class StrictSignalParser:
             leverage, mode = LeveragePolicy.classify_leverage(mode_hint, bool(sl), raw_leverage)
             
             # CRITICAL FIX: Validate and correct leverage according to customer requirements
-            # This enforces SWING=6x, FAST=10x, DYNAMIC≥7.5x
+            # CLIENT SPEC: SWING=x6.00, DYNAMIC≥x7.50, FIXED=explicit
             validated_leverage = self.validate_leverage(leverage, mode)
             if validated_leverage != leverage:
                 system_logger.info(f"Leverage adjusted: {leverage}x → {validated_leverage}x for mode {mode}")
@@ -809,29 +807,33 @@ class StrictSignalParser:
         """
         Validate and correct leverage according to customer rules.
         
-        CLIENT SPEC (doc/requirement.txt:14):
-        - SWING: Always 6x
-        - FAST: Always 10x
-        - DYNAMIC: Must be ≥7.5x (forbidden gap: 6 < lev < 7.5)
+        CLIENT SPEC (doc/10_15.md):
+        - SWING: Always x6.00
+        - DYNAMIC: Must be ≥x7.50 (forbidden gap: 6 < lev < 7.5)
+        - FIXED: Explicit leverage (forbid 6 < lev < 7.5)
         
         Args:
             leverage: Extracted leverage from signal
-            signal_type: "SWING", "FAST", or "DYNAMIC"
+            signal_type: "SWING", "DYNAMIC", or "FIXED"
             
         Returns:
             Validated/corrected leverage
         """
-        # SWING: force to 6x
+        # SWING: force to 6.00x
         if signal_type == "SWING":
-            if leverage and leverage != Decimal("6"):
-                system_logger.info(f"SWING leverage adjusted {leverage}x → 6x")
-            return Decimal("6")
+            if leverage and leverage != Decimal("6.00"):
+                system_logger.info(f"SWING leverage adjusted {leverage}x → 6.00x")
+            return Decimal("6.00")
         
-        # FAST: force to 10x
-        if signal_type == "FAST":
-            if leverage and leverage != Decimal("10"):
-                system_logger.info(f"FAST leverage adjusted {leverage}x → 10x")
-            return Decimal("10")
+        # FIXED: explicit leverage, validate not in forbidden gap
+        if signal_type == "FIXED":
+            if leverage:
+                if Decimal("6") < leverage < Decimal("7.5"):
+                    system_logger.error(f"FIXED leverage {leverage}x in forbidden gap (6-7.5)")
+                    raise ValueError(f"Forbidden leverage {leverage}x in gap (6, 7.5)")
+                return leverage
+            # No explicit leverage for FIXED → invalid
+            raise ValueError("FIXED mode requires explicit leverage")
         
         # DYNAMIC: validate against forbidden gap and minimum
         if not leverage:
@@ -907,14 +909,18 @@ class StrictSignalParser:
             raise ValueError("Cross margin not allowed - must use isolated margin only")
         
         if not has_sl:
-            # Missing SL → FAST x10
-            return STRICT_CONFIG.fast_leverage, "FAST"
+            # CLIENT SPEC: Missing SL → lock leverage x10 (safety case, not a mode)
+            system_logger.warning("Missing SL detected, locking leverage at x10.00 (CLIENT SPEC)")
+            return STRICT_CONFIG.auto_sl_leverage, "FIXED"
         
         if mode_hint == "SWING":
             return STRICT_CONFIG.swing_leverage, "SWING"
         
-        if mode_hint == "FAST":
-            return STRICT_CONFIG.fast_leverage, "FAST"
+        if mode_hint == "FIXED" and raw_leverage:
+            # FIXED mode: explicit leverage
+            if Decimal("6") < raw_leverage < Decimal("7.5"):
+                raise ValueError(f"Forbidden leverage {raw_leverage}x in gap (6, 7.5)")
+            return raw_leverage, "FIXED"
         
         if mode_hint == "DYNAMIC":
             # Calculate dynamic leverage based on position size and IM
@@ -969,7 +975,9 @@ class StrictSignalParser:
             dynamic_leverage = base_leverage
         
         # Round to 1 decimal place for clean values
-        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.1'), rounding=ROUND_DOWN)
+        # CLIENT SPEC FIX: Round to 2 decimal places (was 1, violates client requirement)
+        # doc/requirement.txt Line 20: "Does the leverage have 2 decimal places on dynamic leverage?"
+        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
         
         # Ensure it's within bounds [7.5, 25]
         dynamic_leverage = max(dynamic_leverage, STRICT_CONFIG.min_dynamic_leverage)
@@ -1004,8 +1012,8 @@ class StrictSignalParser:
             if leverage <= 0 or leverage > 50:
                 return False
             
-            # Validate mode
-            if mode not in ['SWING', 'FAST', 'DYNAMIC']:
+            # Validate mode (CLIENT SPEC: SWING, DYNAMIC, FIXED only)
+            if mode not in ['SWING', 'DYNAMIC', 'FIXED']:
                 return False
             
             return True

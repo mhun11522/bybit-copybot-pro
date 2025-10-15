@@ -16,6 +16,9 @@ class WebSocketTradeHandlers:
     def __init__(self):
         # CLIENT FIX: Removed unused self.templates
         self.active_trades: Dict[str, Dict[str, Any]] = {}
+        # CRITICAL FIX (ERROR #3): Track entry fills for consolidated message
+        self._entry_fills: Dict[str, bool] = {}  # {symbol_E1: True/False, symbol_E2: True/False}
+        self._entry_data: Dict[str, Dict[str, Any]] = {}  # {symbol_E1: {price, qty, im, ts}, ...}
     
     async def handle_execution(self, execution_data: Dict[str, Any]):
         """Handle order execution updates from WebSocket."""
@@ -85,12 +88,14 @@ class WebSocketTradeHandlers:
         """
         Handle entry order fill - CLIENT SPEC dual-limit flow.
         
-        Flow: ENTRY 1 filled → ENTRY 2 filled → ENTRY CONSOLIDATED
+        CRITICAL FIX (ERROR #3): Proper dual-limit tracking with consolidated message.
+        Flow: ENTRY 1 filled → ENTRY 2 filled → ENTRY CONSOLIDATED (with VWAP)
         """
         try:
             from app.telegram.engine import render_template
-            from app.core.confirmation_gate import ConfirmationGate
+            from app.core.confirmation_gate import get_confirmation_gate
             from app.bybit.client import get_bybit_client
+            from datetime import datetime
             
             # Determine which entry this is (E1 or E2) from orderLinkId
             entry_no = 1
@@ -100,45 +105,52 @@ class WebSocketTradeHandlers:
                 entry_no = 1
             else:
                 # Fallback: check if this symbol already has one fill
-                if symbol in self.active_trades and "entry1_filled" in self.active_trades[symbol]:
+                fill_key_1 = f"{symbol}_E1"
+                if self._entry_fills.get(fill_key_1, False):
                     entry_no = 2
             
             # Initialize trade tracking if needed
             if symbol not in self.active_trades:
                 self.active_trades[symbol] = {
                     "trade_id": f"{symbol}_{int(asyncio.get_event_loop().time())}",
-                    "side": "LONG" if side == "Buy" else "SHORT"
+                    "side": "LONG" if side == "Buy" else "SHORT",
+                    "symbol": symbol
                 }
             
             trade_info = self.active_trades[symbol]
             
-            # Fetch exact IM from Bybit for this entry
+            # Fetch exact IM from Bybit for this symbol
             client = get_bybit_client()
-            gate = ConfirmationGate(client)
+            gate = get_confirmation_gate()
             im_confirmed = await gate._fetch_confirmed_im(symbol)
             
-            # Store this entry's data
-            if entry_no == 1:
-                trade_info["entry1_filled"] = True
-                trade_info["entry1_price"] = price
-                trade_info["entry1_qty"] = qty
-                trade_info["entry1_im"] = im_confirmed / Decimal("2")  # Split IM 50/50
-            else:
-                trade_info["entry2_filled"] = True
-                trade_info["entry2_price"] = price
-                trade_info["entry2_qty"] = qty
-                trade_info["entry2_im"] = im_confirmed / Decimal("2")  # Split IM 50/50
+            # CRITICAL FIX: Track this entry fill
+            fill_key = f"{symbol}_E{entry_no}"
+            self._entry_fills[fill_key] = True
+            
+            # Store detailed entry data for consolidation
+            self._entry_data[fill_key] = {
+                'price': price,
+                'qty': qty,
+                'im': im_confirmed / Decimal("2"),  # IM for this specific entry (50/50 split)
+                'timestamp': datetime.now(),
+                'order_id': order_id
+            }
             
             # Send ENTRY TAKEN message
             rendered = render_template("ENTRY_TAKEN", {
                 'entry_no': entry_no,
                 'source_name': trade_info.get('channel_name', 'Unknown'),
                 'symbol': symbol,
-                'price': price,
+                'side': trade_info.get('side', 'LONG'),
+                'trade_type': trade_info.get('trade_type', 'SWING'),
+                'entry': price,
                 'qty': qty,
                 'im': im_confirmed / Decimal("2"),  # IM for this entry
-                'im_total': im_confirmed,  # Total IM
-                'trade_id': trade_info['trade_id']
+                'im_total': im_confirmed,  # Total IM across both entries
+                'trade_id': trade_info['trade_id'],
+                'bot_order_id': f"BOT-{trade_info['trade_id']}",
+                'bybit_order_id': order_id
             })
             
             await send_message(
@@ -149,39 +161,111 @@ class WebSocketTradeHandlers:
                 hashtags=rendered["hashtags"]
             )
             
-            # If both entries are now filled, send ENTRY CONSOLIDATED
-            if trade_info.get("entry1_filled") and trade_info.get("entry2_filled"):
-                # Calculate VWAP
-                e1_price = trade_info["entry1_price"]
-                e1_qty = trade_info["entry1_qty"]
-                e2_price = trade_info["entry2_price"]
-                e2_qty = trade_info["entry2_qty"]
-                
-                total_qty = e1_qty + e2_qty
-                avg_entry = (e1_price * e1_qty + e2_price * e2_qty) / total_qty
-                
-                # Send ENTRY CONSOLIDATED message
-                consolidated = render_template("ENTRY_CONSOLIDATED", {
-                    'source_name': trade_info.get('channel_name', 'Unknown'),
-                    'symbol': symbol,
-                    'avg_entry': avg_entry,
-                    'total_qty': total_qty,
-                    'total_im': im_confirmed,
-                    'trade_id': trade_info['trade_id']
-                })
-                
-                await send_message(
-                    consolidated["text"],
-                    template_name=consolidated["template_name"],
-                    trade_id=consolidated["trade_id"],
-                    symbol=consolidated["symbol"],
-                    hashtags=consolidated["hashtags"]
-                )
+            system_logger.info(f"Entry {entry_no} filled and message sent", {
+                'symbol': symbol,
+                'entry_no': entry_no,
+                'price': float(price),
+                'qty': float(qty),
+                'im': float(im_confirmed / Decimal("2"))
+            })
             
-            system_logger.info(f"Entry {entry_no} filled: {symbol} {side} {qty}@{price}")
+            # CRITICAL FIX (ERROR #3): Check if both entries are now filled
+            fill_key_1 = f"{symbol}_E1"
+            fill_key_2 = f"{symbol}_E2"
+            
+            if self._entry_fills.get(fill_key_1, False) and self._entry_fills.get(fill_key_2, False):
+                # Both entries filled - send CONSOLIDATED message
+                await self._send_consolidated_entry(symbol, trade_info)
             
         except Exception as e:
             system_logger.error(f"Error handling entry fill: {e}", exc_info=True)
+    
+    async def _send_consolidated_entry(self, symbol: str, trade_info: Dict[str, Any]):
+        """
+        Send consolidated entry message with VWAP calculation.
+        
+        CLIENT SPEC (doc/requirement.txt Lines 325-345):
+        📌 Sammanslagning av ENTRY 1 + ENTRY 2
+        Must show ENTRY 1, ENTRY 2, and COMBINED POSITION with VWAP.
+        """
+        try:
+            from app.telegram.engine import render_template
+            
+            # Get both entry data
+            fill_key_1 = f"{symbol}_E1"
+            fill_key_2 = f"{symbol}_E2"
+            
+            entry1 = self._entry_data.get(fill_key_1, {})
+            entry2 = self._entry_data.get(fill_key_2, {})
+            
+            if not entry1 or not entry2:
+                system_logger.error(f"Cannot send consolidated message - missing entry data for {symbol}")
+                return
+            
+            # Calculate VWAP (Volume-Weighted Average Price)
+            # CLIENT SPEC: "volymvägt mellan entry1 & entry2" (NOT simple average!)
+            e1_price = entry1['price']
+            e1_qty = entry1['qty']
+            e2_price = entry2['price']
+            e2_qty = entry2['qty']
+            
+            total_qty = e1_qty + e2_qty
+            vwap = (e1_price * e1_qty + e2_price * e2_qty) / total_qty
+            
+            # Total IM is sum of both entries
+            total_im = entry1['im'] + entry2['im']
+            
+            # Send consolidated message via Engine
+            rendered = render_template("ENTRY_CONSOLIDATED", {
+                'source_name': trade_info.get('channel_name', 'Unknown'),
+                'symbol': symbol,
+                'side': trade_info.get('side', 'LONG'),
+                'trade_type': trade_info.get('trade_type', 'SWING'),
+                'entry1': e1_price,
+                'qty1': e1_qty,
+                'im1': entry1['im'],
+                'entry2': e2_price,
+                'qty2': e2_qty,
+                'im2': entry2['im'],
+                'avg_entry': vwap,  # CRITICAL: Must be VWAP (volume-weighted)
+                'qty_total': total_qty,
+                'im_total': total_im,
+                'trade_id': trade_info['trade_id'],
+                'bot_order_id': f"BOT-{trade_info['trade_id']}",
+                'bybit_order_id': entry2.get('order_id', '')  # Use latest order ID
+            })
+            
+            await send_message(
+                rendered["text"],
+                template_name=rendered["template_name"],
+                trade_id=rendered["trade_id"],
+                symbol=rendered["symbol"],
+                hashtags=rendered["hashtags"]
+            )
+            
+            system_logger.info("Entry consolidated message sent", {
+                'symbol': symbol,
+                'vwap': float(vwap),
+                'entry1': float(e1_price),
+                'entry2': float(e2_price),
+                'total_qty': float(total_qty),
+                'total_im': float(total_im)
+            })
+            
+            # Store VWAP as original_entry_price for this trade
+            trade_info['original_entry_price'] = vwap
+            trade_info['avg_entry'] = vwap
+            trade_info['total_qty'] = total_qty
+            trade_info['total_im'] = total_im
+            
+            # Clean up tracking data
+            del self._entry_fills[fill_key_1]
+            del self._entry_fills[fill_key_2]
+            del self._entry_data[fill_key_1]
+            del self._entry_data[fill_key_2]
+            
+        except Exception as e:
+            system_logger.error(f"Error sending consolidated entry message: {e}", exc_info=True)
     
     async def _handle_exit_fill(self, symbol: str, side: str, qty: Decimal, price: Decimal, order_id: str):
         """

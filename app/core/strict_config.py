@@ -19,10 +19,10 @@ class StrictSettings:
     max_trades: int = 100               # Maximum concurrent trades
     timezone: str = "Europe/Stockholm"  # Client specified timezone
     
-    # Leverage policy (exact client rules)
-    swing_leverage: Decimal = Decimal("6.00")  # CLIENT SPEC: SWING must be x6.00
-    fast_leverage: Decimal = Decimal("10.00")  # CLIENT SPEC: FAST must be x10.00 
-    min_dynamic_leverage: Decimal = Decimal("7.5")
+    # Leverage policy (CLIENT SPEC - doc/10_15.md)
+    swing_leverage: Decimal = Decimal("6.00")  # SWING must be x6.00
+    min_dynamic_leverage: Decimal = Decimal("7.5")  # DYNAMIC minimum x7.50
+    auto_sl_leverage: Decimal = Decimal("10.00")  # Safety lock when SL missing
     forbidden_leverage_gap_min: Decimal = Decimal("6")
     forbidden_leverage_gap_max: Decimal = Decimal("7.5")
     
@@ -35,14 +35,17 @@ class StrictSettings:
     
     # Pyramid levels (EXACT CLIENT SPECIFICATION - DO NOT MODIFY)
     # All percentages calculated from ORIGINAL ENTRY, not current average
+    # CRITICAL CLARIFICATION (doc/requirement.txt Line 10 vs doc/10_15.md Line 136):
+    # - Template calls this "Pyramid Step 4" = +2.4% leverage-only
+    # - Next step is +2.5% = IM to 40 USDT
     pyramid_levels: List[Dict[str, Any]] = [
-        {"trigger": Decimal("1.5"), "action": "im_total", "target_im": 20},     # Step 1: +1.5% → IM total 20 USDT
-        {"trigger": Decimal("2.3"), "action": "sl_breakeven"},                  # Step 2: +2.3% → SL to breakeven
-        {"trigger": Decimal("2.4"), "action": "set_full_leverage"},            # Step 3: +2.4% → Full leverage (ETH=50x cap)
-        {"trigger": Decimal("2.5"), "action": "im_total", "target_im": 40},    # Step 4: +2.5% → IM total 40 USDT
-        {"trigger": Decimal("4.0"), "action": "im_total", "target_im": 60},    # Step 5: +4.0% → IM total 60 USDT
-        {"trigger": Decimal("6.0"), "action": "im_total", "target_im": 80},    # Step 6: +6.0% → IM total 80 USDT
-        {"trigger": Decimal("8.6"), "action": "im_total", "target_im": 100},   # Step 7: +8.6% → IM total 100 USDT (CLIENT SPEC)
+        {"trigger": Decimal("1.5"), "action": "im_check", "target_im": 20},      # Step 1: +1.5% → Check IM = 20 USDT if any TP hit
+        {"trigger": Decimal("2.3"), "action": "sl_breakeven"},                   # Step 2: +2.3% → SL to BE + 0.0015%
+        {"trigger": Decimal("2.4"), "action": "set_full_leverage", "leverage_cap": Decimal("50")},  # Step 3 (Template "Step 4"): +2.4% → Leverage-only (max 50x)
+        {"trigger": Decimal("2.5"), "action": "im_total", "target_im": 40},     # Step 4: +2.5% → IM total 40 USDT
+        {"trigger": Decimal("4.0"), "action": "im_total", "target_im": 60},     # Step 5: +4.0% → IM total 60 USDT
+        {"trigger": Decimal("6.0"), "action": "im_total", "target_im": 80},     # Step 6: +6.0% → IM total 80 USDT
+        {"trigger": Decimal("8.6"), "action": "im_total", "target_im": 100},    # Step 7: +8.6% → IM total 100 USDT (CLIENT SPEC)
     ]
     
     # Leverage constraints (CLIENT SPEC)
@@ -122,7 +125,7 @@ class StrictSettings:
     entry_time_in_force: str = "PostOnly"  # PostOnly to wait at exact signal price
     exit_order_type: str = "Market"  # Market orders for TP/SL (Conditional)
     exit_reduce_only: bool = True
-    exit_trigger_by: str = "MarkPrice"
+    exit_trigger_by: str = "LastPrice"  # CLIENT SPEC: Consistent trigger source for all SL/TP (LastPrice|MarkPrice|IndexPrice)
     
     # Symbol validation
     min_notional_usdt: Decimal = Decimal("5")  # Minimum 5 USDT notional
@@ -182,19 +185,28 @@ def load_strict_config() -> StrictSettings:
                     config.channel_id_name_map[channel_id] = channel_name
                     config.source_whitelist.append(channel_id)
             
-            print(f"Loaded {len(config.source_whitelist)} whitelisted channels from environment")
+            system_logger.info(
+                f"Loaded {len(config.source_whitelist)} whitelisted channels from environment",
+                {"channel_count": len(config.source_whitelist)}
+            )
         else:
-            print("CHANNEL_ID_NAME_MAP environment variable not set, using default channels")
+            system_logger.info("CHANNEL_ID_NAME_MAP environment variable not set, using default channels")
             # Use all available channels from the mapping as whitelisted
             config.source_whitelist = list(config.channel_id_name_map.keys())
-            print(f"Whitelisted {len(config.source_whitelist)} default channels")
+            system_logger.info(
+                f"Whitelisted {len(config.source_whitelist)} default channels",
+                {"channel_count": len(config.source_whitelist)}
+            )
         
         # Merge with ALLOWED_CHANNEL_IDS from environment if provided
         from app.config.settings import ALLOWED_CHANNEL_IDS
         if ALLOWED_CHANNEL_IDS:
             additional_channels = [str(ch_id) for ch_id in ALLOWED_CHANNEL_IDS if str(ch_id) not in config.source_whitelist]
             config.source_whitelist.extend(additional_channels)
-            print(f"Added {len(additional_channels)} additional channels from ALLOWED_CHANNEL_IDS")
+            system_logger.info(
+                f"Added {len(additional_channels)} additional channels from ALLOWED_CHANNEL_IDS",
+                {"additional_count": len(additional_channels)}
+            )
         
         # DEMO FIX (2025-10-13): Always ensure test channel is whitelisted
         test_channel = "-1003027029201"
@@ -203,7 +215,10 @@ def load_strict_config() -> StrictSettings:
         # Always ensure the test channel has the correct name in the map
         if test_channel not in config.channel_id_name_map or config.channel_id_name_map[test_channel] != "MY_TEST_CHANNEL":
             config.channel_id_name_map[test_channel] = "MY_TEST_CHANNEL"
-            print(f"[OK] Added test channel {test_channel} (MY_TEST_CHANNEL) to whitelist")
+            system_logger.info(
+                f"Added test channel {test_channel} (MY_TEST_CHANNEL) to whitelist",
+                {"channel_id": test_channel, "channel_name": "MY_TEST_CHANNEL"}
+            )
         
         # Override with existing settings if available
         try:
@@ -251,31 +266,25 @@ def load_strict_config() -> StrictSettings:
         missing = sorted(required_sources - found_sources)
         if missing:
             system_logger.warning(
-                f"Source governance check: Missing required sources: {', '.join(missing)}",
+                f"Source governance check: Missing required sources: {', '.join(missing)}. "
+                f"Bot will start but governance is incomplete.",
                 {
                     "required": list(required_sources),
                     "present": list(present_sources),
                     "missing": missing,
-                    "found": list(found_sources)
+                    "found": list(found_sources),
+                    "governance_status": "incomplete"
                 }
             )
             # CLIENT SPEC: Warn but allow startup if required sources are missing
             # TODO: Add CRYPTORAKETEN channel ID when available
-            try:
-                print(f"⚠️  WARNING: Missing required sources: {', '.join(missing)}")
-                print(f"⚠️  Found: {', '.join(found_sources)}")
-                print(f"⚠️  Bot will start but governance is incomplete.")
-            except UnicodeEncodeError:
-                print(f"WARNING: Missing required sources: {', '.join(missing)}")
-                print(f"Found: {', '.join(found_sources)}")
-                print(f"Bot will start but governance is incomplete.")
         
         if not missing:
             system_logger.info("Source governance check: ALL required sources found", {
                 "required_sources": list(required_sources),
-                "found_sources": list(found_sources)
+                "found_sources": list(found_sources),
+                "governance_status": "complete"
             })
-            print(f"[OK] All required sources found: {', '.join(found_sources)}")
         else:
             system_logger.info("Source governance check: Partial compliance", {
                 "required_sources": list(required_sources),

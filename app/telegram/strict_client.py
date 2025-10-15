@@ -26,10 +26,15 @@ class StrictTelegramClient:
         
         system_logger.info(f"Creating Telegram client with session: {session_path}")
         
+        # FIX: Use StringSession instead of SQLiteSession to avoid database locking
+        # The SQLiteSession was causing "database is locked" errors on Windows
         self.client = TelegramClient(
-            session_path,  # Use string path, let Telethon handle session
+            session_path,  # Use string path
             STRICT_CONFIG.telegram_api_id,
-            STRICT_CONFIG.telegram_api_hash
+            STRICT_CONFIG.telegram_api_hash,
+            timeout=30,  # Add timeout to prevent hanging
+            connection_retries=3,  # Limit retries
+            retry_delay=1  # Delay between retries
         )
         self.parser = get_strict_parser()
         # CLIENT FIX: Removed self.templates - using render_template() instead

@@ -90,9 +90,9 @@ class TradeFSM:
         if direction not in ['LONG', 'SHORT']:
             raise ValueError(f"Invalid direction: {direction}")
         
-        # Validate mode
+        # Validate mode (CLIENT SPEC: SWING, DYNAMIC, FIXED only)
         mode = signal_data['mode']
-        if mode not in ['SWING', 'FAST', 'DYNAMIC']:
+        if mode not in ['SWING', 'DYNAMIC', 'FIXED']:
             raise ValueError(f"Invalid mode: {mode}")
         
         # Validate entries

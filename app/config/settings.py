@@ -1,6 +1,16 @@
 # app/config/settings.py
 # Strict schema configuration for Bybit Copybot Pro
 
+# ⚠️ DEPRECATION NOTICE (CLIENT SPEC doc/10_15.md):
+# This file should ONLY be used for non-secret operational configuration.
+# For secrets (BYBIT_*, TELEGRAM_*), use STRICT_CONFIG from app.core.ALL_PARAMETERS
+#
+# MIGRATION PATH:
+# - Old: from app.config.settings import BYBIT_API_KEY
+# - New: from app.core.strict_config import STRICT_CONFIG; STRICT_CONFIG.bybit_api_key
+#
+# This file is kept for backward compatibility but will be deprecated.
+
 import os
 from decimal import Decimal
 from dotenv import load_dotenv
@@ -15,9 +25,10 @@ BASE_IM = Decimal(os.getenv("BASE_IM", "20"))  # 20 USDT base initial margin
 MAX_CONCURRENT_TRADES = int(os.getenv("MAX_CONCURRENT_TRADES", "100"))  # Max 100 concurrent trades
 
 # Bybit Configuration
+# ⚠️ DEPRECATED: Use STRICT_CONFIG instead for secrets (CLIENT SPEC)
 BYBIT_ENDPOINT = os.getenv("BYBIT_ENDPOINT", "https://api-demo.bybit.com")  # DEMO by default
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY") or ""
-BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET") or ""
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY") or ""  # DEPRECATED: Use STRICT_CONFIG.bybit_api_key
+BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET") or ""  # DEPRECATED: Use STRICT_CONFIG.bybit_api_secret
 BYBIT_RECV_WINDOW = os.getenv("BYBIT_RECV_WINDOW", "30000")
 
 # Whitelist "3 always" channels (strict requirement)
@@ -28,9 +39,10 @@ ALWAYS_WHITELIST_CHANNELS = [
     "MY_TEST_CHANNEL"  # For testing
 ]
 
+# ⚠️ DEPRECATED: Use STRICT_CONFIG instead for secrets (CLIENT SPEC)
 TELEGRAM_SESSION = os.getenv("TELEGRAM_SESSION", "bybit_copybot_session")
-TELEGRAM_API_ID  = int(os.getenv("TELEGRAM_API_ID", "0"))
-TELEGRAM_API_HASH= os.getenv("TELEGRAM_API_HASH", "")
+TELEGRAM_API_ID  = int(os.getenv("TELEGRAM_API_ID", "0"))  # DEPRECATED: Use STRICT_CONFIG.telegram_api_id
+TELEGRAM_API_HASH= os.getenv("TELEGRAM_API_HASH", "")  # DEPRECATED: Use STRICT_CONFIG.telegram_api_hash
 
 
 # Multi-channel support: whitelisted source names and IDs

@@ -56,11 +56,15 @@ except Exception:  # Fallback shim when aiosqlite isn't installable
 
     class _ConnShim:
         def __init__(self, path: str):
-            self._conn = sqlite3.connect(path, check_same_thread=False, timeout=10.0)
+            # CRITICAL FIX: Increase timeout for Windows concurrent access
+            self._conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
             # Enable WAL mode for better concurrent access
             try:
                 self._conn.execute('PRAGMA journal_mode=WAL')
-                self._conn.execute('PRAGMA busy_timeout=10000')  # 10 second timeout
+                self._conn.execute('PRAGMA busy_timeout=30000')  # 30 second timeout
+                self._conn.execute('PRAGMA synchronous=NORMAL')
+                self._conn.execute('PRAGMA foreign_keys=ON')
+                self._conn.execute('PRAGMA cache_size=-64000')
                 self._conn.commit()
             except Exception:
                 pass  # Silently ignore if PRAGMA not supported
@@ -94,12 +98,41 @@ DB_PATH = "trades.sqlite"
 
 
 async def get_db_connection():
-    """Get a database connection."""
-    return aiosqlite.connect(DB_PATH)
+    """
+    Get a database connection with optimized settings.
+    
+    CRITICAL FIX (ERROR #1): Enable WAL mode for concurrent access.
+    This prevents "database is locked" errors on Windows.
+    """
+    conn = await aiosqlite.connect(DB_PATH)
+    
+    # CRITICAL FIX: Enable Write-Ahead Logging for concurrent access
+    # This allows multiple readers and one writer simultaneously
+    await conn.execute('PRAGMA journal_mode=WAL')
+    
+    # Set busy timeout (wait up to 10 seconds for locks instead of failing immediately)
+    await conn.execute('PRAGMA busy_timeout=10000')
+    
+    # Optimize for concurrent reads (NORMAL is faster than FULL, safe with WAL)
+    await conn.execute('PRAGMA synchronous=NORMAL')
+    
+    # Enable foreign keys for data integrity
+    await conn.execute('PRAGMA foreign_keys=ON')
+    
+    # Increase cache size for better performance (default is too small)
+    await conn.execute('PRAGMA cache_size=-64000')  # 64MB cache
+    
+    return conn
 
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
+        # CRITICAL FIX: Enable WAL mode immediately on initialization
+        await db.execute('PRAGMA journal_mode=WAL')
+        await db.execute('PRAGMA busy_timeout=10000')
+        await db.execute('PRAGMA synchronous=NORMAL')
+        await db.execute('PRAGMA foreign_keys=ON')
+        
         # Lightweight migrations: ensure missing columns exist
         await _migrate_trades_table(db)
         

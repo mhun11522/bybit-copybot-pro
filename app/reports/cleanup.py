@@ -63,12 +63,18 @@ async def cleanup_old_orders():
 📍 Info: Order not opened within 6 days (deleted per rules)""")
                 
             except Exception as e:
-                print(f"⚠️  Failed to cleanup order {trade_id}: {e}")
+                system_logger.warning(f"Failed to cleanup order {trade_id}: {e}", {
+                    "trade_id": trade_id,
+                    "error": str(e)
+                })
         
         await db.commit()
     
     if deleted_count > 0:
-        print(f"🧹 Cleaned up {deleted_count} old orders (>6 days)")
+        system_logger.info(f"Cleaned up {deleted_count} old orders (>6 days)", {
+            "deleted_count": deleted_count,
+            "age_days": 6
+        })
     
     return deleted_count
 
@@ -78,7 +84,7 @@ async def cleanup_scheduler():
         try:
             await cleanup_old_orders()
         except Exception as e:
-            print(f"⚠️  Cleanup scheduler error: {e}")
+            system_logger.error(f"Cleanup scheduler error: {e}", exc_info=True)
         
         # Check every 6 hours
         await asyncio.sleep(6 * 3600)

@@ -207,19 +207,19 @@ def fmt_leverage_with_type(leverage, trade_type: str) -> str:
     """
     Format leverage with type label (Swedish format).
     
-    CLIENT SPEC (doc/10_11.md Lines 1280, 1306, 1338):
+    CLIENT SPEC (doc/10_15.md):
     - SWING: "⚙️ Hävstång SWING: x6,00"
     - Dynamisk: "⚙️ Hävstång Dynamisk: x13,56"
-    - FAST: "⚙️ Hävstång Fast: x10,00"
+    - FIXED: "⚙️ Hävstång Fast: x10,00" (explicit)
     
     Examples:
         fmt_leverage_with_type(6.00, "Swing") -> "⚙️ Hävstång SWING: x6,00"
         fmt_leverage_with_type(13.56, "Dynamisk") -> "⚙️ Hävstång Dynamisk: x13,56"
-        fmt_leverage_with_type(10.00, "FAST") -> "⚙️ Hävstång Fast: x10,00"
+        fmt_leverage_with_type(10.00, "FIXED") -> "⚙️ Hävstång Fast: x10,00"
     
     Args:
         leverage: Leverage value (Decimal, float, int, or string)
-        trade_type: "Swing", "Dynamisk", or "FAST"
+        trade_type: "Swing", "Dynamisk", or "FIXED"
     
     Returns:
         Formatted string with type label and comma separator
@@ -232,7 +232,7 @@ def fmt_leverage_with_type(leverage, trade_type: str) -> str:
             return f"⚙️ Hävstång SWING: x{lev_str}"
         elif trade_type == "Dynamisk":
             return f"⚙️ Hävstång Dynamisk: x{lev_str}"
-        elif trade_type == "FAST":
+        elif trade_type == "FIXED":
             return f"⚙️ Hävstång Fast: x{lev_str}"
         else:
             return f"⚙️ Hävstång: x{lev_str}"
@@ -330,9 +330,9 @@ def detect_trade_type(leverage, has_sl: bool = True) -> str:
     """
     Detect trade type from leverage value.
     
-    CLIENT SPEC (doc/10_11.md Lines 192-194):
+    CLIENT SPEC (doc/10_15.md):
     - SWING: x6.00 (fixed)
-    - FAST: x10.00 (fixed, no SL)
+    - FIXED: x10.00 or other explicit (typically when SL missing)
     - Dynamisk: ≥x7.50 (formula-based)
     
     Args:
@@ -340,11 +340,11 @@ def detect_trade_type(leverage, has_sl: bool = True) -> str:
         has_sl: Whether signal has SL
     
     Returns:
-        "Swing", "Dynamisk", or "FAST"
+        "Swing", "Dynamisk", or "FIXED"
     
     Examples:
         detect_trade_type(6.00, True) -> "Swing"
-        detect_trade_type(10.00, False) -> "FAST"
+        detect_trade_type(10.00, False) -> "FIXED"
         detect_trade_type(13.56, True) -> "Dynamisk"
     """
     try:
@@ -354,9 +354,9 @@ def detect_trade_type(leverage, has_sl: bool = True) -> str:
         if lev == Decimal("6.00"):
             return "Swing"
         
-        # FAST: exactly 10.00 and no SL
+        # FIXED: exactly 10.00 and no SL (safety lock per CLIENT SPEC)
         if lev == Decimal("10.00") and not has_sl:
-            return "FAST"
+            return "FIXED"
         
         # Dynamisk: >= 7.50
         if lev >= Decimal("7.50"):

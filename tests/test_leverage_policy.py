@@ -15,9 +15,9 @@ def test_allow_isolated_margin():
     assert LeveragePolicy.enforce_isolated_margin_only(msg) is False  # Should allow
 
 def test_exact_modes():
-    """Test exact leverage validation for each mode."""
+    """Test exact leverage validation for each mode (FAST removed, FIXED added per CLIENT SPEC)."""
     assert LeveragePolicy.validate_leverage(Decimal("6"), "SWING") is True
-    assert LeveragePolicy.validate_leverage(Decimal("10"), "FAST") is True
+    assert LeveragePolicy.validate_leverage(Decimal("10"), "FIXED") is True  # Changed from FAST to FIXED
     assert LeveragePolicy.validate_leverage(Decimal("7.5"), "DYNAMIC") is True
     assert LeveragePolicy.validate_leverage(Decimal("7.4"), "DYNAMIC") is False  # Below minimum
     assert LeveragePolicy.validate_leverage(Decimal("25"), "DYNAMIC") is True  # CLIENT SPEC: DYNAMIC capped at 25x
@@ -32,10 +32,10 @@ def test_forbidden_gap():
     assert LeveragePolicy.is_forbidden_gap(Decimal("7.5")) is False  # Exactly 7.5 is allowed
 
 def test_leverage_classification():
-    """Test leverage classification logic."""
-    # Test missing SL -> FAST
+    """Test leverage classification logic (FAST removed, FIXED added per CLIENT SPEC)."""
+    # Test missing SL -> FIXED (changed from FAST per CLIENT SPEC)
     leverage, mode = LeveragePolicy.classify_leverage(None, False, None)
-    assert mode == "FAST"
+    assert mode == "FIXED"  # Changed from FAST to FIXED
     assert leverage == Decimal("10")
     
     # Test SWING mode
@@ -43,9 +43,9 @@ def test_leverage_classification():
     assert mode == "SWING"
     assert leverage == Decimal("6")
     
-    # Test FAST mode
-    leverage, mode = LeveragePolicy.classify_leverage("FAST", True, None)
-    assert mode == "FAST"
+    # Test FIXED mode (changed from FAST per CLIENT SPEC)
+    leverage, mode = LeveragePolicy.classify_leverage("FIXED", True, Decimal("10"))
+    assert mode == "FIXED"  # Changed from FAST to FIXED
     assert leverage == Decimal("10")
     
     # Test DYNAMIC mode

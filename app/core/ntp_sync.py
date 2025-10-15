@@ -21,7 +21,8 @@ try:
     NTP_AVAILABLE = True
 except ImportError:
     NTP_AVAILABLE = False
-    print("⚠️ ntplib not installed. Run: pip install ntplib")
+    from app.core.logging import system_logger
+    system_logger.warning("ntplib not installed. Run: pip install ntplib")
 
 from app.core.logging import system_logger
 
@@ -59,6 +60,10 @@ class NTPClockMonitor:
         self.total_checks = 0
         self.drift_warnings = 0
         self.drift_blocks = 0
+        
+        # CLIENT SPEC: P95/P99 drift metrics
+        self.drift_history: List[float] = []
+        self.max_history_size = 1000  # Keep last 1000 measurements
     
     async def check_drift(self) -> Optional[float]:
         """
@@ -85,6 +90,11 @@ class NTPClockMonitor:
                 self.last_drift = drift
                 self.last_check = datetime.now(pytz.UTC)
                 self.consecutive_failures = 0
+                
+                # CLIENT SPEC: Track drift history for P95/P99 metrics
+                self.drift_history.append(abs(drift))
+                if len(self.drift_history) > self.max_history_size:
+                    self.drift_history.pop(0)  # Keep only recent history
                 
                 # Log drift
                 system_logger.debug(f"NTP drift check", {
@@ -206,8 +216,12 @@ class NTPClockMonitor:
         return not self.trading_blocked
     
     def get_status(self) -> Dict[str, Any]:
-        """Get NTP monitor status."""
-        return {
+        """
+        Get NTP monitor status.
+        
+        CLIENT SPEC: Include P95/P99 drift metrics.
+        """
+        status = {
             "trading_allowed": not self.trading_blocked,
             "last_drift_ms": self.last_drift * 1000 if self.last_drift else None,
             "last_check": self.last_check.isoformat() if self.last_check else None,
@@ -217,6 +231,22 @@ class NTPClockMonitor:
             "consecutive_failures": self.consecutive_failures,
             "ntp_servers": self.ntp_servers
         }
+        
+        # CLIENT SPEC: Add P95/P99 metrics
+        if self.drift_history:
+            sorted_drifts = sorted(self.drift_history)
+            count = len(sorted_drifts)
+            
+            p95_idx = int(count * 0.95)
+            p99_idx = int(count * 0.99)
+            
+            status["p95_drift_ms"] = sorted_drifts[p95_idx] * 1000 if p95_idx < count else None
+            status["p99_drift_ms"] = sorted_drifts[p99_idx] * 1000 if p99_idx < count else None
+            status["avg_drift_ms"] = (sum(self.drift_history) / count) * 1000
+            status["max_drift_ms"] = max(self.drift_history) * 1000
+            status["min_drift_ms"] = min(self.drift_history) * 1000
+        
+        return status
 
 
 # Global NTP monitor instance
