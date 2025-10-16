@@ -489,10 +489,15 @@ class BybitClient:
         body = {"category":category,"symbol":symbol}
         return await self._post_auth("/v5/order/cancel-all", body)
 
-    async def query_open(self, category, symbol):
+    async def query_open(self, category, symbol=None, settleCoin=None):
         # Use GET method for querying open orders (V5 uses query params, not body)
-        # settleCoin is optional, openOnly is not a valid param for V5
-        params = {"category":category,"symbol":symbol}
+        # CRITICAL FIX: Add support for settleCoin parameter to avoid error 10001
+        params = {"category": category}
+        if symbol:
+            params["symbol"] = symbol
+        if settleCoin:
+            params["settleCoin"] = settleCoin
+        
         try:
             return await self._get_auth("/v5/order/realtime", params)
         except httpx.HTTPStatusError as e:
@@ -505,9 +510,9 @@ class BybitClient:
             # Already logged by system_logger, no need for print
             return {"retCode":0, "retMsg":"OK", "result":{"list":[]}}
 
-    async def get_open_orders(self, category, symbol):
+    async def get_open_orders(self, category, symbol=None, settleCoin=None):
         """Alias for query_open to maintain compatibility with existing code."""
-        return await self.query_open(category, symbol)
+        return await self.query_open(category, symbol, settleCoin)
 
     async def positions(self, category, symbol):
         """

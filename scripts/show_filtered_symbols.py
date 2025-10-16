@@ -36,7 +36,7 @@ async def show_all_symbols():
     
     # Initialize (loads all symbols)
     print("Loading symbols from Bybit...")
-    registry = await get_symbol_registry()
+    registry = get_symbol_registry()
     all_symbols = await registry.get_all_symbols()
     
     if not all_symbols:
@@ -98,7 +98,7 @@ async def test_symbols(symbols: List[str]):
         
         if is_available:
             # Get details
-            registry = await get_symbol_registry()
+            registry = get_symbol_registry()
             symbol_info = await registry.get_symbol_info(symbol)
             
             print(f"✅ {symbol}: AVAILABLE")

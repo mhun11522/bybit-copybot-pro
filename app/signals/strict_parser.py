@@ -255,7 +255,7 @@ class StrictSignalParser:
             
             # Validate symbol is tradeable on Bybit with fallback logic
             from app.core.symbol_registry import get_symbol_registry
-            registry = await get_symbol_registry()
+            registry = get_symbol_registry()
             symbol_info = await registry.get_symbol_info(symbol)
             
             # Double-check symbol info (should already be filtered by above check)

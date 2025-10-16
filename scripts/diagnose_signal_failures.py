@@ -55,7 +55,7 @@ class SignalFailureDiagnostic:
     async def initialize(self):
         """Initialize clients and registries."""
         self.bybit_client = get_bybit_client()
-        self.symbol_registry = await get_symbol_registry()
+        self.symbol_registry = get_symbol_registry()
         print("[OK] Diagnostic tools initialized")
     
     async def run_full_diagnostic(self):
@@ -277,7 +277,7 @@ class SignalFailureDiagnostic:
         """Check active orders and positions on Bybit."""
         try:
             # Get active orders
-            orders_result = await self.bybit_client.get_open_orders(CATEGORY)
+            orders_result = await self.bybit_client.get_open_orders(CATEGORY, settleCoin="USDT")
             
             if orders_result and orders_result.get('retCode') == 0:
                 orders = orders_result.get('result', {}).get('list', [])

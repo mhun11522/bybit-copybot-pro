@@ -42,6 +42,13 @@ class BybitWebSocket:
         self.ping_interval = 30  # CLIENT SPEC: 30 seconds
         self.pong_timeout = 60   # Reconnect if no pong in 60s
         
+        # PRIORITY 2 FIX: Exponential backoff retry logic
+        self.retry_count = 0
+        self.max_retries = 5
+        self.base_delay = 1.0  # Start with 1 second
+        self.max_delay = 60.0  # Max 60 seconds
+        self.reconnect_task: Optional[asyncio.Task] = None
+        
         # CLIENT SPEC: Gap detection
         from app.core.websocket_gap_detector import get_gap_detector
         self.gap_detector = get_gap_detector()
@@ -72,11 +79,14 @@ class BybitWebSocket:
         }
     
     async def connect(self):
-        """Connect to Bybit WebSocket and authenticate"""
+        """Connect to Bybit WebSocket and authenticate with exponential backoff retry"""
         if not WEBSOCKETS_AVAILABLE:
             system_logger.error("WebSocket not available - install websockets package")
             return False
             
+        # Reset retry count on successful connection
+        self.retry_count = 0
+        
         try:
             system_logger.info(f"Connecting to Bybit WebSocket: {self.ws_url}")
             self.ws = await websockets.connect(self.ws_url, ping_interval=None)
@@ -114,6 +124,25 @@ class BybitWebSocket:
         except Exception as e:
             system_logger.error(f"Bybit WebSocket connection failed: {e}", exc_info=True)
             return False
+    
+    async def connect_with_retry(self):
+        """Connect with exponential backoff retry logic"""
+        while self.retry_count < self.max_retries:
+            success = await self.connect()
+            if success:
+                return True
+            
+            self.retry_count += 1
+            if self.retry_count >= self.max_retries:
+                system_logger.error(f"WebSocket connection failed after {self.max_retries} attempts")
+                return False
+            
+            # Calculate exponential backoff delay
+            delay = min(self.base_delay * (2 ** (self.retry_count - 1)), self.max_delay)
+            system_logger.warning(f"WebSocket connection failed, retrying in {delay:.1f}s (attempt {self.retry_count}/{self.max_retries})")
+            await asyncio.sleep(delay)
+        
+        return False
     
     async def subscribe_execution(self, symbol: str, handler: Callable):
         """
@@ -291,8 +320,8 @@ class BybitWebSocket:
         # Wait before reconnecting
         await asyncio.sleep(2)
         
-        # CLIENT SPEC: Step 2 - Reconnect
-        if await self.connect():
+        # CLIENT SPEC: Step 2 - Reconnect with exponential backoff
+        if await self.connect_with_retry():
             # CLIENT SPEC: Step 3 - Restore subscriptions
             for symbol, handler in old_execution_handlers.items():
                 await self.subscribe_execution(symbol, handler)

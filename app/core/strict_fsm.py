@@ -626,7 +626,7 @@ class TradeFSM:
             
             # Get symbol metadata
             symbol = self.signal_data['symbol']
-            registry = await get_symbol_registry()
+            registry = get_symbol_registry()
             symbol_info = await registry.get_symbol_info(symbol)
             
             if not symbol_info:
@@ -661,7 +661,7 @@ class TradeFSM:
             leverage = self.signal_data['leverage']
             
             # Check symbol's maximum leverage limit
-            registry = await get_symbol_registry()
+            registry = get_symbol_registry()
             symbol_info = await registry.get_symbol_info(symbol)
             
             if symbol_info:

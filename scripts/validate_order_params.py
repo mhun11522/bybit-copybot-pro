@@ -40,7 +40,7 @@ class OrderValidator:
     async def initialize(self):
         """Initialize clients."""
         self.bybit_client = get_bybit_client()
-        self.symbol_registry = await get_symbol_registry()
+        self.symbol_registry = get_symbol_registry()
     
     def add_check(self, check_name: str, passed: bool, details: str = ""):
         """Add validation check result."""

@@ -130,6 +130,7 @@ class StrictSettings:
     # Symbol validation
     min_notional_usdt: Decimal = Decimal("5")  # Minimum 5 USDT notional
     supported_categories: List[str] = ["linear"]  # USDT perps only
+    category: str = "linear"  # Default category for Bybit API calls
     
     # Idempotency settings
     idempotency_ttl_seconds: int = 10800  # 3-hour sliding window as per client requirements

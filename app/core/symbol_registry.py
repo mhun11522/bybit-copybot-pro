@@ -81,7 +81,7 @@ class SymbolRegistry:
         self._update_interval = 300  # 5 minutes
         self._bybit_client = None
     
-    async def _get_bybit_client(self) -> BybitClient:
+    def _get_bybit_client(self) -> BybitClient:
         """Get singleton Bybit client."""
         if self._bybit_client is None:
             # Use the global singleton instance
@@ -93,7 +93,7 @@ class SymbolRegistry:
     async def _fetch_symbols(self) -> Dict[str, SymbolInfo]:
         """Fetch symbol metadata from Bybit."""
         try:
-            client = await self._get_bybit_client()
+            client = self._get_bybit_client()
             
             # Fetch all linear (perpetual) symbols
             result = await client.instruments("linear", "")
@@ -224,7 +224,7 @@ class SymbolRegistry:
 # Global registry instance
 _registry_instance = None
 
-async def get_symbol_registry() -> SymbolRegistry:
+def get_symbol_registry() -> SymbolRegistry:
     """Get global symbol registry instance."""
     global _registry_instance
     if _registry_instance is None:
@@ -233,10 +233,10 @@ async def get_symbol_registry() -> SymbolRegistry:
 
 async def validate_symbol(symbol: str) -> bool:
     """Validate symbol (convenience function)."""
-    registry = await get_symbol_registry()
+    registry = get_symbol_registry()
     return await registry.is_symbol_valid(symbol)
 
 async def quantize_order_params(symbol: str, qty: Decimal, price: Decimal) -> Optional[Dict[str, Any]]:
     """Quantize and validate order parameters (convenience function)."""
-    registry = await get_symbol_registry()
+    registry = get_symbol_registry()
     return await registry.validate_order(symbol, qty, price)

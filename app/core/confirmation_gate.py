@@ -271,7 +271,7 @@ class ConfirmationGate:
                 # Get symbol metadata for minimum quantity validation
                 from app.core.symbol_registry import get_symbol_registry
                 from app.core.position_calculator import PositionCalculator
-                registry = await get_symbol_registry()
+                registry = get_symbol_registry()
                 symbol_info = await registry.get_symbol_info(symbol)
                 
                 if symbol_info:
@@ -416,7 +416,18 @@ class ConfirmationGate:
                 "tp3": tps[2] if tps and len(tps) > 2 else None,
                 "tp4": tps[3] if tps and len(tps) > 3 else None,
                 "sl": sl,
+                # CLIENT SPEC: Add required template enforcement fields
+                "trigger_source": "LastPrice",  # Default trigger source for Bybit orders
+                "source_channel_name": channel_name,  # Channel name for template validation
             }
+            
+            # Ensure all required fields are present for template validation
+            if not template_data.get("trigger_source"):
+                template_data["trigger_source"] = "LastPrice"
+            if not template_data.get("source_channel_name"):
+                template_data["source_channel_name"] = channel_name
+            if not template_data.get("im_confirmed"):
+                template_data["im_confirmed"] = im_confirmed
             
             # Render template using TemplateEngine
             rendered = render_template("ORDER_PLACED", template_data)
@@ -814,7 +825,7 @@ class ConfirmationGate:
         for attempt in range(max_retries):
             try:
                 # Get symbol info for quantity formatting
-                registry = await get_symbol_registry()
+                registry = get_symbol_registry()
                 symbol_info = await registry.get_symbol_info(symbol)
                 
                 # Format quantity using symbol info
@@ -983,7 +994,7 @@ class ConfirmationGate:
         for attempt in range(max_retries):
             try:
                 # Get symbol info for price adjustment
-                registry = await get_symbol_registry()
+                registry = get_symbol_registry()
                 symbol_info = await registry.get_symbol_info(symbol)
                 
                 # Adjust price to ensure PostOnly acceptance

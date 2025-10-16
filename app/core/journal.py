@@ -299,7 +299,8 @@ class AppendOnlyJournal:
             bybit_orders = {}
             for category in ["linear"]:  # Add more categories if needed
                 try:
-                    response = await bybit_client.get_open_orders(category)
+                    # CRITICAL FIX: Add settleCoin parameter to avoid error 10001
+                    response = await bybit_client.get_open_orders(category, settleCoin="USDT")
                     if response.get("retCode") == 0:
                         for order in response.get("result", {}).get("list", []):
                             order_id = order.get("orderId")

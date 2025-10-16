@@ -57,11 +57,12 @@ async def send_message(
     try:
         # Import here to avoid circular import
         from app.telegram.strict_client import get_strict_telegram_client
-        from app.config.settings import OUTPUT_CHANNEL_ID, BYBIT_ENDPOINT
+        from app.config.settings import OUTPUT_CHANNEL_ID
+        from app.core.strict_config import STRICT_CONFIG
         
         # CLIENT FIX: is_production not in environment_detector, detect from endpoint
         def is_production():
-            return "demo" not in BYBIT_ENDPOINT.lower() and "testnet" not in BYBIT_ENDPOINT.lower()
+            return "demo" not in STRICT_CONFIG.bybit_endpoint.lower() and "testnet" not in STRICT_CONFIG.bybit_endpoint.lower()
         
         # CLIENT SPEC: Generate trace_id if not provided
         if not trace_id:

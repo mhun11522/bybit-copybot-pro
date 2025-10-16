@@ -1,6 +1,7 @@
 import functools, asyncio, time, traceback
 from app.telegram.output import send_message
 from app.core.retcodes import MAP, TRANSIENT
+from app.core.logging import system_logger
 
 _BREAKER = {"open": False, "until": 0.0, "fail_count": 0}
 _PAUSE_S = 120

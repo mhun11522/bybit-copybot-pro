@@ -82,7 +82,7 @@ class SymbolFilter:
             
             try:
                 from app.core.symbol_registry import get_symbol_registry
-                registry = await get_symbol_registry()
+                registry = get_symbol_registry()
                 
                 # Get all available symbols
                 all_symbols = await registry.get_all_symbols()
@@ -119,7 +119,7 @@ class SymbolFilter:
             
             try:
                 from app.core.symbol_registry import get_symbol_registry
-                registry = await get_symbol_registry()
+                registry = get_symbol_registry()
                 
                 # Force refresh registry
                 await registry.refresh_symbols()
@@ -154,7 +154,7 @@ class SymbolFilter:
         """
         try:
             from app.core.symbol_registry import get_symbol_registry
-            registry = await get_symbol_registry()
+            registry = get_symbol_registry()
             
             symbol_info = await registry.get_symbol_info(symbol)
             

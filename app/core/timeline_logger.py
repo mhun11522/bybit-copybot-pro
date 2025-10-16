@@ -107,6 +107,21 @@ class TimelineLogger:
         
         system_logger.debug("Timeline: Bybit ack", event.to_dict())
     
+    async def log_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """
+        Log a generic timeline event.
+        
+        Args:
+            event_type: Type of event (e.g., "BYBIT_REQUEST", "BYBIT_ACK", "TELEGRAM_SEND")
+            data: Event data dictionary
+        """
+        operation_id = data.get("operation_id", "unknown")
+        event = TimelineEvent(operation_id, event_type, data)
+        
+        await self._append_event(event)
+        
+        system_logger.debug(f"Timeline: {event_type}", event.to_dict())
+    
     async def log_telegram_send(self, operation_id: str, message_id: Optional[int],
                                 template_name: str, symbol: str) -> None:
         """

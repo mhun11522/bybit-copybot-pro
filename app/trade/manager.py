@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from app.bybit.client import BybitClient
 from app.core.logging import trade_logger, system_logger
-from app.config.settings import CATEGORY
+from app.core.strict_config import STRICT_CONFIG
 from app.storage.db import get_db_connection
 
 
@@ -17,35 +17,62 @@ class PositionManager:
         self.bybit = bybit_client
         self.monitoring_tasks = {}
         self.cleanup_interval = 300  # 5 minutes
+        self._cleanup_running = False
+        self._cleanup_task = None
+        # PRIORITY 2 FIX: Track task lifecycle for proper cleanup
+        self._task_metadata = {}  # {symbol: {"task": task, "created_at": timestamp, "trade_id": trade_id}}
+        self._shutdown = False
     
     async def start_monitoring(self, symbol: str, trade_id: str):
-        """Start monitoring a position."""
+        """Start monitoring a position with proper task lifecycle management."""
         try:
             if symbol in self.monitoring_tasks:
                 trade_logger.warning(f"Already monitoring {symbol}")
                 return
             
-            # Create monitoring task
+            # PRIORITY 2 FIX: Create monitoring task with metadata tracking
             task = asyncio.create_task(self._monitor_position(symbol, trade_id))
             self.monitoring_tasks[symbol] = task
             
+            # Track task metadata for proper cleanup
+            import time
+            self._task_metadata[symbol] = {
+                "task": task,
+                "created_at": time.time(),
+                "trade_id": trade_id
+            }
+            
             trade_logger.info(f"Started monitoring position {symbol}", {
                 'trade_id': trade_id,
-                'symbol': symbol
+                'symbol': symbol,
+                'task_count': len(self.monitoring_tasks)
             })
             
         except Exception as e:
             trade_logger.error(f"Failed to start monitoring {symbol}: {e}", exc_info=True)
     
     async def stop_monitoring(self, symbol: str):
-        """Stop monitoring a position."""
+        """Stop monitoring a position with proper cleanup."""
         try:
             if symbol in self.monitoring_tasks:
                 task = self.monitoring_tasks[symbol]
-                task.cancel()
-                del self.monitoring_tasks[symbol]
                 
-                trade_logger.info(f"Stopped monitoring position {symbol}")
+                # PRIORITY 2 FIX: Properly cancel and wait for task completion
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass  # Expected when cancelling
+                except Exception as e:
+                    trade_logger.warning(f"Task {symbol} completed with error: {e}")
+                
+                # Clean up task tracking
+                del self.monitoring_tasks[symbol]
+                self._task_metadata.pop(symbol, None)
+                
+                trade_logger.info(f"Stopped monitoring position {symbol}", {
+                    'remaining_tasks': len(self.monitoring_tasks)
+                })
                 
         except Exception as e:
             trade_logger.error(f"Failed to stop monitoring {symbol}: {e}")
@@ -88,7 +115,7 @@ class PositionManager:
     async def _get_position_info(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get current position information from Bybit."""
         try:
-            result = await self.bybit.positions(CATEGORY, symbol)
+            result = await self.bybit.positions(STRICT_CONFIG.category, symbol)
             
             if result.get("retCode") == 0:
                 positions = result.get("result", {}).get("list", [])
@@ -158,7 +185,7 @@ class PositionManager:
             
             # Place market order to close
             order_body = {
-                "category": CATEGORY,
+                "category": STRICT_CONFIG.category,
                 "symbol": symbol,
                 "side": close_side,
                 "orderType": "Market",
@@ -247,7 +274,7 @@ class PositionManager:
     async def get_all_positions(self) -> List[Dict[str, Any]]:
         """Get all active positions."""
         try:
-            result = await self.bybit.positions(CATEGORY, "")
+            result = await self.bybit.positions(STRICT_CONFIG.category, "")
             
             if result.get("retCode") == 0:
                 return result.get("result", {}).get("list", [])
@@ -286,13 +313,72 @@ class PositionManager:
     
     async def start_cleanup_scheduler(self):
         """Start periodic cleanup of expired positions."""
-        while True:
+        # Prevent multiple instances
+        if self._cleanup_running or self._cleanup_task is not None:
+            trade_logger.info("Cleanup scheduler already running, skipping start")
+            return
+            
+        self._cleanup_running = True
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        trade_logger.info("Starting cleanup scheduler")
+    
+    async def _cleanup_loop(self):
+        """Internal cleanup loop."""
+        try:
+            while self._cleanup_running:
+                try:
+                    await self.cleanup_expired_positions()
+                    await asyncio.sleep(self.cleanup_interval)
+                except Exception as e:
+                    trade_logger.error(f"Cleanup scheduler error: {e}")
+                    await asyncio.sleep(60)
+        finally:
+            self._cleanup_running = False
+            self._cleanup_task = None
+            trade_logger.info("Cleanup scheduler stopped")
+    
+    async def stop_cleanup_scheduler(self):
+        """Stop the cleanup scheduler."""
+        if self._cleanup_task is not None:
+            self._cleanup_running = False
+            self._cleanup_task.cancel()
             try:
-                await self.cleanup_expired_positions()
-                await asyncio.sleep(self.cleanup_interval)
-            except Exception as e:
-                trade_logger.error(f"Cleanup scheduler error: {e}")
-                await asyncio.sleep(60)
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+    
+    async def shutdown(self):
+        """Shutdown position manager and clean up all tasks."""
+        system_logger.info("Shutting down position manager...")
+        self._shutdown = True
+        
+        # Stop cleanup scheduler
+        await self.stop_cleanup_scheduler()
+        
+        # PRIORITY 2 FIX: Cancel all monitoring tasks
+        tasks_to_cancel = []
+        for symbol, task in self.monitoring_tasks.items():
+            tasks_to_cancel.append((symbol, task))
+        
+        # Cancel all tasks
+        for symbol, task in tasks_to_cancel:
+            task.cancel()
+        
+        # Wait for all tasks to complete
+        if tasks_to_cancel:
+            try:
+                await asyncio.wait([task for _, task in tasks_to_cancel], timeout=5.0)
+            except asyncio.TimeoutError:
+                system_logger.warning("Some monitoring tasks did not complete within timeout")
+        
+        # Clear all tracking data
+        self.monitoring_tasks.clear()
+        self._task_metadata.clear()
+        
+        system_logger.info("Position manager shutdown complete", {
+            'cancelled_tasks': len(tasks_to_cancel)
+        })
 
 
 # Global manager instance

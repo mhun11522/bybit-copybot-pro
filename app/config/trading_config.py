@@ -2,37 +2,38 @@
 
 import os
 from typing import Dict, Any
+from decimal import Decimal
 
 # Trading modes
 TRADING_MODE = os.getenv("TRADING_MODE", "MONITOR")  # MONITOR, DRY_RUN, LIVE
 
 # Safety settings
 MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "10"))
-MAX_POSITION_SIZE_USDT = float(os.getenv("MAX_POSITION_SIZE_USDT", "100"))
-MIN_SIGNAL_CONFIDENCE = float(os.getenv("MIN_SIGNAL_CONFIDENCE", "0.7"))
+MAX_POSITION_SIZE_USDT = Decimal(os.getenv("MAX_POSITION_SIZE_USDT", "100"))
+MIN_SIGNAL_CONFIDENCE = Decimal(os.getenv("MIN_SIGNAL_CONFIDENCE", "0.7"))
 
 # Risk management
 MAX_LEVERAGE = int(os.getenv("MAX_LEVERAGE", "20"))
-STOP_LOSS_PERCENTAGE = float(os.getenv("STOP_LOSS_PERCENTAGE", "5.0"))
-TAKE_PROFIT_PERCENTAGE = float(os.getenv("TAKE_PROFIT_PERCENTAGE", "10.0"))
+STOP_LOSS_PERCENTAGE = Decimal(os.getenv("STOP_LOSS_PERCENTAGE", "5.0"))
+TAKE_PROFIT_PERCENTAGE = Decimal(os.getenv("TAKE_PROFIT_PERCENTAGE", "10.0"))
 
-# Channel-specific settings
+# Channel-specific settings (using Decimal for financial calculations)
 CHANNEL_RISK_MULTIPLIERS = {
-    "SRC_LUX_LEAK": 1.0,
-    "SRC_CRYPTORAKETEN": 0.8,
-    "SRC_SMART_CRYPTO": 1.2,
-    "SRC_WOLF_TRADING": 0.9,
-    "SRC_ALGOBOT": 1.1,
-    "SRC_BITOP_CRYPTO": 0.7,
-    "SRC_CRYPTO_BOE": 1.0,
-    "SRC_CRYPTO_JOBS": 0.8,
-    "SRC_BYBIT_FUTURE": 1.3,
-    "SRC_CRYPTO_PUMP_CLUB": 0.6,
-    "SRC_TRADEBOLT": 1.0,
-    "SRC_SCALPING_100": 0.5,
-    "SRC_CRYPTO_SCALPING": 0.5,
-    "SRC_HEMI_SIGNALS": 0.9,
-    "MY_TEST_CHANNEL": 0.1,  # Very low risk for testing
+    "SRC_LUX_LEAK": Decimal("1.0"),
+    "SRC_CRYPTORAKETEN": Decimal("0.8"),
+    "SRC_SMART_CRYPTO": Decimal("1.2"),
+    "SRC_WOLF_TRADING": Decimal("0.9"),
+    "SRC_ALGOBOT": Decimal("1.1"),
+    "SRC_BITOP_CRYPTO": Decimal("0.7"),
+    "SRC_CRYPTO_BOE": Decimal("1.0"),
+    "SRC_CRYPTO_JOBS": Decimal("0.8"),
+    "SRC_BYBIT_FUTURE": Decimal("1.3"),
+    "SRC_CRYPTO_PUMP_CLUB": Decimal("0.6"),
+    "SRC_TRADEBOLT": Decimal("1.0"),
+    "SRC_SCALPING_100": Decimal("0.5"),
+    "SRC_CRYPTO_SCALPING": Decimal("0.5"),
+    "SRC_HEMI_SIGNALS": Decimal("0.9"),
+    "MY_TEST_CHANNEL": Decimal("0.1"),  # Very low risk for testing
 }
 
 # Symbol blacklist (symbols to never trade)
@@ -58,9 +59,9 @@ def is_dry_run() -> bool:
     """Check if dry run mode is enabled."""
     return TRADING_MODE == "DRY_RUN"
 
-def get_channel_risk_multiplier(channel_name: str) -> float:
+def get_channel_risk_multiplier(channel_name: str) -> Decimal:
     """Get risk multiplier for a channel."""
-    return CHANNEL_RISK_MULTIPLIERS.get(channel_name, 1.0)
+    return CHANNEL_RISK_MULTIPLIERS.get(channel_name, Decimal("1.0"))
 
 def is_symbol_blacklisted(symbol: str) -> bool:
     """Check if symbol is blacklisted."""

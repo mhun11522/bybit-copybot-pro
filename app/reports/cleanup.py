@@ -5,7 +5,8 @@ Order cleanup: Delete orders not opened within 6 days (Requirement #5)
 import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from app.config.settings import TIMEZONE, CATEGORY
+from app.config.settings import TIMEZONE
+from app.core.strict_config import STRICT_CONFIG
 from app.bybit.client import BybitClient
 from app.storage.db import aiosqlite, DB_PATH
 from app.telegram.output import send_message
@@ -39,7 +40,7 @@ async def cleanup_old_orders():
         for trade_id, symbol, channel_name, created_at in old_trades:
             try:
                 # Cancel all orders for this symbol
-                await bybit.cancel_all(CATEGORY, symbol)
+                await bybit.cancel_all(STRICT_CONFIG.category, symbol)
                 
                 # Mark as DONE/CANCELLED in database
                 await db.execute("""

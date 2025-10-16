@@ -33,6 +33,7 @@ from app.config.settings import (
     BYBIT_ENDPOINT, TIMEZONE, RISK_PER_TRADE, BASE_IM, 
     MAX_CONCURRENT_TRADES, ALWAYS_WHITELIST_CHANNELS
 )
+# NOTE: Migration to strict_config in progress - some values still from settings.py
 from app.telegram.strict_client import start_strict_telegram
 # CLIENT FIX: Removed old strict_scheduler import - using ReportSchedulerV2 only
 from app.reports.cleanup import cleanup_scheduler
@@ -71,11 +72,13 @@ if sys.platform.startswith("win"):
 
 async def _print_config_snapshot():
     """Print configuration snapshot with redacted secrets."""
-    from app.config.settings import BYBIT_ENDPOINT, BYBIT_API_KEY, BYBIT_API_SECRET
+    # Use strict_config for API credentials
+    api_key = STRICT_CONFIG.bybit_api_key
+    api_secret = STRICT_CONFIG.bybit_api_secret
     
     # Redact API secrets
-    redacted_key = f"{BYBIT_API_KEY[:8]}...{BYBIT_API_KEY[-4:]}" if BYBIT_API_KEY else "NOT_SET"
-    redacted_secret = f"{BYBIT_API_SECRET[:8]}...{BYBIT_API_SECRET[-4:]}" if BYBIT_API_SECRET else "NOT_SET"
+    redacted_key = f"{api_key[:8]}...{api_key[-4:]}" if api_key else "NOT_SET"
+    redacted_secret = f"{api_secret[:8]}...{api_secret[-4:]}" if api_secret else "NOT_SET"
     
     system_logger.info("Configuration Snapshot", {
         "endpoint": BYBIT_ENDPOINT,
@@ -105,7 +108,7 @@ async def _initialize_strict_components():
         system_logger.info("Decimal precision configured")
         
         # Initialize symbol registry
-        symbol_registry = await get_symbol_registry()
+        symbol_registry = get_symbol_registry()
         await symbol_registry.update_symbols(force=True)
         system_logger.info("Symbol registry initialized")
         
@@ -244,9 +247,9 @@ async def main():
             else:
                 system_logger.warning("Journal reconciliation found issues", {"orphans": len(reconciliation_report.get("orphans", [])), "missing": len(reconciliation_report.get("missing", []))})
                 if reconciliation_report.get("orphans"):
-                    # Logged above
+                    pass  # Already logged above
                 if reconciliation_report.get("missing"):
-                    # Logged above
+                    pass  # Already logged above
         except Exception as e:
             # Already logged by system_logger.warning above
             system_logger.warning(f"Journal reconciliation failed (continuing): {e}")
@@ -311,7 +314,7 @@ async def main():
         
         # Start position manager
         position_manager = await get_position_manager()
-        asyncio.create_task(position_manager.start_cleanup_scheduler())
+        await position_manager.start_cleanup_scheduler()
         system_logger.info("Position manager started")
         
         # Start Bybit WebSocket for real-time updates (if available)
