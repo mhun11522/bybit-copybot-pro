@@ -22,31 +22,31 @@ class ReportGeneratorV2:
             start_time = datetime.combine(today, datetime.min.time())
             end_time = datetime.combine(today, datetime.max.time())
             
-            # Get trade data
-            trades = await self._get_trades_in_range(start_time, end_time)
-            
-            # Calculate statistics
-            total_trades = len(trades)
-            winning_trades = len([t for t in trades if t.get('profit', 0) > 0])
-            losing_trades = len([t for t in trades if t.get('profit', 0) < 0])
-            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-            
-            total_profit = sum(t.get('profit', 0) for t in trades)
-            avg_profit = total_profit / total_trades if total_trades > 0 else 0
-            max_profit = max((t.get('profit', 0) for t in trades), default=0)
-            max_loss = min((t.get('profit', 0) for t in trades), default=0)
-            
-            # Strategy statistics
-            breakeven_count = len([t for t in trades if t.get('breakeven_activated', False)])
-            pyramid_levels = sum(t.get('pyramid_levels', 0) for t in trades)
-            trailing_stops = len([t for t in trades if t.get('trailing_activated', False)])
-            hedges = len([t for t in trades if t.get('hedge_activated', False)])
-            reentries = sum(t.get('reentry_attempts', 0) for t in trades)
-            
-            # Error statistics
-            error_count = await self._get_error_count(start_time, end_time)
-            order_errors = await self._get_order_error_count(start_time, end_time)
-            parsing_errors = await self._get_parsing_error_count(start_time, end_time)
+            # CRITICAL FIX: Use single database connection for all queries
+            db = await get_db_connection()
+            try:
+                # Get all data in one connection to avoid threading issues
+                trades, error_count, order_errors, parsing_errors = await self._get_all_report_data(db, start_time, end_time)
+                
+                # Calculate statistics
+                total_trades = len(trades)
+                winning_trades = len([t for t in trades if t.get('profit', 0) > 0])
+                losing_trades = len([t for t in trades if t.get('profit', 0) < 0])
+                win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                
+                total_profit = sum(t.get('profit', 0) for t in trades)
+                avg_profit = total_profit / total_trades if total_trades > 0 else 0
+                max_profit = max((t.get('profit', 0) for t in trades), default=0)
+                max_loss = min((t.get('profit', 0) for t in trades), default=0)
+                
+                # Strategy statistics
+                breakeven_count = len([t for t in trades if t.get('breakeven_activated', False)])
+                pyramid_levels = sum(t.get('pyramid_levels', 0) for t in trades)
+                trailing_stops = len([t for t in trades if t.get('trailing_activated', False)])
+                hedges = len([t for t in trades if t.get('hedge_activated', False)])
+                reentries = sum(t.get('reentry_attempts', 0) for t in trades)
+            finally:
+                await db.close()
             
             return {
                 'total_trades': total_trades,
@@ -133,6 +133,57 @@ class ReportGeneratorV2:
             system_logger.error(f"Error generating weekly report: {e}", exc_info=True)
             return self._get_empty_report()
     
+    async def _get_all_report_data(self, db, start_time: datetime, end_time: datetime) -> tuple:
+        """Get all report data in a single database connection to avoid threading issues."""
+        try:
+            # Get trades
+            cursor = await db.execute("""
+                SELECT * FROM trades 
+                WHERE created_at >= ? AND created_at <= ?
+                ORDER BY created_at DESC
+            """, (start_time.isoformat(), end_time.isoformat()))
+            
+            rows = await cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            trades = [dict(zip(columns, row)) for row in rows]
+            
+            # Get error counts (handle missing error_logs table gracefully)
+            try:
+                cursor = await db.execute("""
+                    SELECT COUNT(*) FROM error_logs 
+                    WHERE timestamp >= ? AND timestamp <= ?
+                """, (start_time.isoformat(), end_time.isoformat()))
+                result = await cursor.fetchone()
+                error_count = result[0] if result else 0
+            except Exception:
+                error_count = 0  # Table doesn't exist yet
+                
+            try:
+                cursor = await db.execute("""
+                    SELECT COUNT(*) FROM error_logs 
+                    WHERE timestamp >= ? AND timestamp <= ? AND error_type LIKE '%order%'
+                """, (start_time.isoformat(), end_time.isoformat()))
+                result = await cursor.fetchone()
+                order_error_count = result[0] if result else 0
+            except Exception:
+                order_error_count = 0  # Table doesn't exist yet
+                
+            try:
+                cursor = await db.execute("""
+                    SELECT COUNT(*) FROM error_logs 
+                    WHERE timestamp >= ? AND timestamp <= ? AND error_type LIKE '%parsing%'
+                """, (start_time.isoformat(), end_time.isoformat()))
+                result = await cursor.fetchone()
+                parsing_error_count = result[0] if result else 0
+            except Exception:
+                parsing_error_count = 0  # Table doesn't exist yet
+            
+            return trades, error_count, order_error_count, parsing_error_count
+            
+        except Exception as e:
+            system_logger.error(f"Error getting all report data: {e}", exc_info=True)
+            return [], 0, 0, 0
+
     async def _get_trades_in_range(self, start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
         """Get trades within time range."""
         try:
@@ -256,8 +307,13 @@ class ReportGeneratorV2:
             start_time = datetime.combine(today, datetime.min.time())
             end_time = datetime.combine(today, datetime.max.time())
             
-            # Get all trades for today, grouped by symbol
-            trades = await self._get_trades_today_grouped(start_time, end_time)
+            # CRITICAL FIX: Use single database connection to avoid threading issues
+            db = await get_db_connection()
+            try:
+                # Get grouped trades data in one connection
+                trades = await self._get_trades_today_grouped(db, start_time, end_time)
+            finally:
+                await db.close()
             
             group_name = trades.get("group_name", "ALL SOURCES")
             rows = trades.get("rows", [])
@@ -283,7 +339,7 @@ class ReportGeneratorV2:
                 "sum_pct": 0.0
             }
     
-    async def _get_trades_today_grouped(self, start_time: datetime, end_time: datetime) -> Dict[str, Any]:
+    async def _get_trades_today_grouped(self, db, start_time: datetime, end_time: datetime) -> Dict[str, Any]:
         """
         Get today's trades grouped by symbol for group report (CLIENT SPEC).
         
@@ -294,42 +350,40 @@ class ReportGeneratorV2:
             }
         """
         try:
-            db = await get_db_connection()
-            async with db:
-                # Get grouped data by symbol
-                cursor = await db.execute("""
-                    SELECT 
-                        symbol,
-                        SUM(profit) as profit_usdt,
-                        AVG(profit_percent) as profit_pct,
-                        channel_name
-                    FROM trades
-                    WHERE created_at >= ? AND created_at <= ?
-                    GROUP BY symbol
-                    ORDER BY symbol
-                """, (start_time.isoformat(), end_time.isoformat()))
+            # Get grouped data by symbol
+            cursor = await db.execute("""
+                SELECT 
+                    symbol,
+                    SUM(profit) as profit_usdt,
+                    AVG(profit_percent) as profit_pct,
+                    channel_name
+                FROM trades
+                WHERE created_at >= ? AND created_at <= ?
+                GROUP BY symbol
+                ORDER BY symbol
+            """, (start_time.isoformat(), end_time.isoformat()))
+            
+            rows_data = await cursor.fetchall()
+            
+            rows = []
+            group_name = "ALL SOURCES"
+            
+            for row in rows_data:
+                symbol, profit_usdt, profit_pct, channel = row
                 
-                rows_data = await cursor.fetchall()
+                if channel:
+                    group_name = channel  # Use last channel as group name
                 
-                rows = []
-                group_name = "ALL SOURCES"
-                
-                for row in rows_data:
-                    symbol, profit_usdt, profit_pct, channel = row
-                    
-                    if channel:
-                        group_name = channel  # Use last channel as group name
-                    
-                    rows.append({
-                        "symbol": symbol or "UNKNOWN",
-                        "pct": float(profit_pct or 0),
-                        "usdt": float(profit_usdt or 0)
-                    })
-                
-                return {
-                    "group_name": group_name,
-                    "rows": rows
-                }
+                rows.append({
+                    "symbol": symbol or "UNKNOWN",
+                    "pct": float(profit_pct or 0),
+                    "usdt": float(profit_usdt or 0)
+                })
+            
+            return {
+                "group_name": group_name,
+                "rows": rows
+            }
                 
         except Exception as e:
             system_logger.error(f"Error getting grouped trades: {e}", exc_info=True)

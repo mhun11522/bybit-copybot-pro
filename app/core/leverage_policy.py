@@ -70,7 +70,7 @@ class LeveragePolicy:
         return 6.0 < leverage_float < 7.5
     
     @staticmethod
-    def classify_leverage(mode_hint: Optional[str], has_sl: bool, raw_leverage: Optional[Decimal]) -> Tuple[Decimal, str]:
+    def classify_leverage(mode_hint: Optional[str], has_sl: bool, raw_leverage: Optional[Decimal], position_size: Optional[Decimal] = None, im_target: Optional[Decimal] = None) -> Tuple[Decimal, str]:
         """
         Classify leverage according to CLIENT SPECIFICATION.
         
@@ -108,80 +108,57 @@ class LeveragePolicy:
         
         if mode_hint == "DYNAMIC" or not mode_hint:
             # Calculate dynamic leverage with strict bounds
-            leverage = LeveragePolicy._calculate_dynamic_leverage(raw_leverage)
+            leverage = LeveragePolicy._calculate_dynamic_leverage(raw_leverage, position_size, im_target)
             system_logger.info(f"DYNAMIC mode: using {leverage}x leverage (bounds: [7.5, 25])")
             return leverage, "DYNAMIC"
         
         # Fallback to DYNAMIC
-        leverage = LeveragePolicy._calculate_dynamic_leverage(raw_leverage)
+        leverage = LeveragePolicy._calculate_dynamic_leverage(raw_leverage, position_size, im_target)
         system_logger.info(f"Unknown mode '{mode_hint}', defaulting to DYNAMIC {leverage}x leverage")
         return leverage, "DYNAMIC"
     
     @staticmethod
-    def _calculate_dynamic_leverage(raw_leverage: Optional[Decimal]) -> Decimal:
+    def _calculate_dynamic_leverage(raw_leverage: Optional[Decimal], position_size: Optional[Decimal] = None, im_target: Optional[Decimal] = None) -> Decimal:
         """
         Calculate dynamic leverage with CLIENT SPECIFICATION.
+        
+        CLIENT FIX: Dynamic leverage should use the raw leverage from the signal directly,
+        but ensure it meets the minimum requirements and is within bounds.
         
         RULES:
         - MUST be >= 7.5x (DYN_MIN)
         - MUST be <= 25x (DYN_MAX)
-        - Forbidden gap (6, 7.5) → promote to 7.5x
-        - If calculated value < 7.5 → force 7.5x
-        - If calculated value > 25 → cap at 25x
+        - Use raw leverage from signal if provided and valid
+        - Default to 10x if no raw leverage provided
         """
         DYN_MIN = STRICT_CONFIG.dynamic_leverage_min  # 7.5
         DYN_MAX = STRICT_CONFIG.dynamic_leverage_max  # 25
         
-        # If raw leverage provided, validate and clamp it
-        if raw_leverage:
-            leverage = raw_leverage
+        try:
+            # CLIENT FIX: Use raw leverage directly if provided and valid
+            if raw_leverage and raw_leverage >= DYN_MIN:
+                # Ensure it's within bounds
+                calculated_leverage = min(raw_leverage, DYN_MAX)
+                system_logger.info(f"Using raw leverage {raw_leverage}x as dynamic leverage (capped at {calculated_leverage}x)")
+            else:
+                # Default dynamic leverage when no valid raw leverage provided
+                calculated_leverage = Decimal("10.00")
+                system_logger.info(f"No valid raw leverage provided, using default dynamic leverage {calculated_leverage}x")
             
-            # Close forbidden gap: if in (6, 7.5) → promote to 7.5
-            if Decimal("6") < leverage < DYN_MIN:
-                system_logger.warning(
-                    f"Raw leverage {leverage}x in forbidden gap (6, 7.5), "
-                    f"promoting to {DYN_MIN}x (client spec)"
-                )
-                leverage = DYN_MIN
+            # Ensure minimum dynamic leverage
+            if calculated_leverage < DYN_MIN:
+                calculated_leverage = DYN_MIN
+                system_logger.info(f"Leverage {calculated_leverage}x < {DYN_MIN}x, forcing to {DYN_MIN}x")
             
-            # Enforce minimum: any value < 7.5 → force 7.5
-            if leverage < DYN_MIN:
-                system_logger.info(f"Raw leverage {leverage}x < {DYN_MIN}x, forcing to {DYN_MIN}x")
-                leverage = DYN_MIN
+            # CLIENT SPEC FIX: Round to 2 decimal places
+            calculated_leverage = calculated_leverage.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
             
-            # Enforce maximum: any value > 25 → cap at 25
-            if leverage > DYN_MAX:
-                system_logger.info(f"Raw leverage {leverage}x > {DYN_MAX}x, capping to {DYN_MAX}x")
-                leverage = DYN_MAX
+            system_logger.info(f"Dynamic leverage calculated: {calculated_leverage}x")
+            return calculated_leverage
             
-            return leverage
-        
-        # No raw leverage provided - calculate based on IM target
-        base_leverage = DYN_MIN  # Start at 7.5x minimum
-        
-        # Use deterministic calculation based on IM target
-        if hasattr(STRICT_CONFIG, 'im_target'):
-            im_factor = min(STRICT_CONFIG.im_target / Decimal("20"), Decimal("2.5"))  # Max 2.5x factor
-            dynamic_leverage = base_leverage * im_factor
-        else:
-            dynamic_leverage = base_leverage
-        
-        # CLIENT SPEC FIX: Round to 2 decimal places (was 1, violates client requirement)
-        # doc/requirement.txt Line 20: "Does the leverage have 2 decimal places on dynamic leverage?"
-        dynamic_leverage = dynamic_leverage.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
-        
-        # Enforce minimum (7.5x)
-        dynamic_leverage = max(dynamic_leverage, DYN_MIN)
-        
-        # Enforce maximum (25x)
-        dynamic_leverage = min(dynamic_leverage, DYN_MAX)
-        
-        # Final forbidden gap check (should not happen, but safety)
-        if Decimal("6") < dynamic_leverage < DYN_MIN:
-            system_logger.warning(f"Calculated leverage {dynamic_leverage}x in forbidden gap, forcing to {DYN_MIN}x")
-            dynamic_leverage = DYN_MIN
-        
-        return dynamic_leverage
+        except Exception as e:
+            system_logger.error(f"Error calculating dynamic leverage: {e}, falling back to minimum")
+            return DYN_MIN
     
     @staticmethod
     def enforce_isolated_margin_only(message: str) -> bool:

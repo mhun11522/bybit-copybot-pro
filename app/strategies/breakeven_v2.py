@@ -118,7 +118,7 @@ class BreakevenStrategyV2:
                 # Get avg_price and leverage from position (FROM BYBIT!)
                 pos = await self.bybit.positions("linear", self.symbol)
                 avg_price = current_price  # Fallback
-                current_leverage = Decimal("6.00")  # Fallback
+                current_leverage = STRICT_CONFIG.breakeven_leverage  # Fallback
                 if pos.get("result", {}).get("list"):
                     position = pos["result"]["list"][0]
                     avg_price = Decimal(str(position.get("avgPrice", str(current_price))))

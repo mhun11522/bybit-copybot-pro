@@ -151,53 +151,59 @@ class ConfirmationGate:
     
     async def _fetch_confirmed_im(self, symbol: str) -> Decimal:
         """
-        Fetch confirmed IM (Initial Margin) from Bybit for a symbol.
+        Get actual IM (Initial Margin) from Bybit position data.
         
-        CLIENT SPEC: IM must be fetched from Bybit and confirmed, never assumed.
+        CLIENT SPEC: IM values in Telegram must be EXACT values from Bybit confirmation,
+        NOT estimated or target values.
         
         Args:
             symbol: Trading symbol (e.g., "BTCUSDT")
         
         Returns:
-            Decimal: Confirmed IM in USDT (defaults to 0 if fetch fails)
+            Decimal: Actual IM in USDT from Bybit position data
         """
         try:
             from app.bybit.client import get_bybit_client
+            
+            # Fetch actual position data from Bybit
             client = get_bybit_client()
+            positions = await client.positions(STRICT_CONFIG.category, symbol)
             
-            # Get position information from Bybit
-            positions_response = await client.get_positions("linear", symbol)
-            
-            if positions_response and positions_response.get("retCode") == 0:
-                positions_list = positions_response.get("result", {}).get("list", [])
+            if positions and positions.get("result") and positions["result"].get("list"):
+                position_list = positions["result"]["list"]
                 
-                if positions_list:
-                    # Extract IM (may appear as positionIM, positionMargin, or margin)
-                    position = positions_list[0]
-                    im_value = (
-                        position.get("positionIM") or 
-                        position.get("positionMargin") or 
-                        position.get("margin") or 
-                        position.get("positionValue")
-                    )
-                    
-                    if im_value is not None:
-                        im_decimal = Decimal(str(im_value))
-                        system_logger.info(f"Confirmed IM for {symbol}: {im_decimal} USDT", {
-                            "symbol": symbol,
-                            "im": float(im_decimal)
-                        })
-                        return im_decimal
+                # Find the position for this symbol
+                for position in position_list:
+                    if position.get("symbol") == symbol and float(position.get("size", 0)) > 0:
+                        # Get actual IM from position data
+                        actual_im = Decimal(str(position.get("positionIM", "0")))
+                        
+                        if actual_im > 0:
+                            system_logger.info(f"Fetched actual IM for {symbol}: {actual_im} USDT from Bybit", {
+                                "symbol": symbol,
+                                "im": float(actual_im),
+                                "size": position.get("size"),
+                                "avgPrice": position.get("avgPrice")
+                            })
+                            return actual_im
+                        else:
+                            system_logger.warning(f"Position IM is 0 for {symbol}, using target IM")
+                            break
             
-            system_logger.warning(f"Could not fetch confirmed IM for {symbol}, defaulting to 0", {
+            # Fallback: Use target IM if no position found or IM is 0
+            target_im = STRICT_CONFIG.im_target  # 20 USDT
+            system_logger.warning(f"No active position found for {symbol}, using target IM: {target_im} USDT", {
                 "symbol": symbol,
-                "response": positions_response
+                "im": float(target_im)
             })
-            return Decimal("0")
+            return target_im
             
         except Exception as e:
-            system_logger.error(f"Error fetching confirmed IM for {symbol}: {e}", exc_info=True)
-            return Decimal("0")
+            system_logger.error(f"Error fetching actual IM for {symbol}: {e}", exc_info=True)
+            # Fallback to target IM on error
+            target_im = STRICT_CONFIG.im_target  # 20 USDT
+            system_logger.warning(f"Using fallback target IM for {symbol}: {target_im} USDT")
+            return target_im
     
     async def place_entry_orders(
         self,

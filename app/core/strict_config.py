@@ -33,6 +33,23 @@ class StrictSettings:
     hedge_trigger: Decimal = Decimal("-2.0")       # -2% trigger for hedge
     max_reentries: int = 3                         # Maximum re-entry attempts
     
+    # Pyramid strategy specific parameters
+    pyramid_step4_trigger: Decimal = Decimal("2.4")  # +2.4% trigger for Step 4 (leverage-only)
+    pyramid_leverage_cap: Decimal = Decimal("50")    # Maximum leverage for pyramid
+    pyramid_position_size: Decimal = Decimal("20")   # Position size for pyramid levels
+    pyramid_price_tolerance_min: Decimal = Decimal("0.999")  # Minimum price tolerance
+    pyramid_price_tolerance_max: Decimal = Decimal("1.001")  # Maximum price tolerance
+    
+    # Breakeven strategy parameters
+    breakeven_leverage: Decimal = Decimal("6.00")    # Leverage for breakeven strategy
+    
+    # Hedge strategy parameters
+    hedge_leverage: Decimal = Decimal("10")          # Leverage for hedge strategy
+    hedge_breakeven_leverage: Decimal = Decimal("6.00")  # Leverage for hedge breakeven
+    
+    # Reentry strategy parameters
+    reentry_leverage: Decimal = Decimal("6.00")      # Leverage for reentry strategy
+    
     # Pyramid levels (EXACT CLIENT SPECIFICATION - DO NOT MODIFY)
     # All percentages calculated from ORIGINAL ENTRY, not current average
     # CRITICAL CLARIFICATION (doc/requirement.txt Line 10 vs doc/10_15.md Line 136):

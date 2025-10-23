@@ -36,7 +36,14 @@ class StrictSignalParser:
             r'Instrument:\s*([A-Z]{2,10}USDT)',  # Instrument format
             r'Symbol:\s*([A-Z]{2,10}USDT)',  # Symbol format
             r'Position:\s*LONG\s+([A-Z]{2,10}USDT)',  # Position format
-            r'Position:\s*SHORT\s+([A-Z]{2,10}USDT)',  # Position format
+            r'Position:\s*SHORT\s+([A-Z]{2,10}USDT)',
+            
+            # PERFECTION FIX: Add patterns for Take-Profit signals
+            r'#([A-Z0-9]+)/USDT.*?Take-Profit.*?target\s+(\d+)',  # #COAI/USDT Take-Profit target 1
+            r'#([A-Z0-9]+)/USDT.*?Profit:\s*([\d.]+)%',  # #COAI/USDT Profit: 10.582%
+            r'#([A-Z0-9]+)/USDT.*?Period:\s*(\d+)\s+Minutes',  # Period: 9 Minutes
+            r'Take-Profit.*?target\s+(\d+).*?#([A-Z0-9]+)/USDT',  # Take-Profit target 1 ✅ #COAI/USDT
+            r'Profit:\s*([\d.]+)%.*?#([A-Z0-9]+)/USDT',  # Profit: 10.582% 📈 #COAI/USDT  # Position format
             r'([A-Z]{2,10}USDT)\s+\|',  # Symbol | format
             r'([A-Z]{2,10}USDT)\s+',  # Symbol followed by space
             # Additional patterns for complex signals
@@ -223,6 +230,19 @@ class StrictSignalParser:
             'FIXED': [r'\b(FIXED|Fixed|fixed)\b'],
         }
     
+    def _is_take_profit_signal(self, message: str) -> bool:
+        """Check if message is a Take-Profit signal (not a trading signal)."""
+        take_profit_indicators = [
+            'Take-Profit target',
+            'Profit:',
+            'Period:',
+            'target 1 ✅',
+            'target 2 ✅',
+            'target 3 ✅',
+            'target 4 ✅'
+        ]
+        return any(indicator in message for indicator in take_profit_indicators)
+    
     async def parse_signal(self, message: str, channel_name: str) -> Optional[Dict[str, Any]]:
         """
         Parse signal with strict client requirements.
@@ -235,6 +255,14 @@ class StrictSignalParser:
         - Missing SL → set auto-SL = entry ±2% adverse direction + lock leverage x10 (CLIENT SPEC)
         """
         try:
+            # PERFECTION FIX: Skip Take-Profit signals (not trading signals)
+            if self._is_take_profit_signal(message):
+                system_logger.debug(f"Signal parsing skipped: Take-Profit signal (not a trading signal)", {
+                    'text': message[:100],
+                    'channel': channel_name
+                })
+                return None
+            
             message_upper = message.upper()
             
             # Extract symbol (required)
@@ -406,7 +434,14 @@ class StrictSignalParser:
                     sl = self._synthesize_sl(entries[0], direction)
             
             # Apply leverage policy (after SL synthesis)
-            leverage, mode = LeveragePolicy.classify_leverage(mode_hint, bool(sl), raw_leverage)
+            # CLIENT FIX: Pass position size and IM target for dynamic leverage calculation
+            leverage, mode = LeveragePolicy.classify_leverage(
+                mode_hint, 
+                bool(sl), 
+                raw_leverage,
+                position_size=STRICT_CONFIG.position_size,  # 20 USDT
+                im_target=STRICT_CONFIG.im_target  # 20 USDT
+            )
             
             # CRITICAL FIX: Validate and correct leverage according to customer requirements
             # CLIENT SPEC: SWING=x6.00, DYNAMIC≥x7.50, FIXED=explicit

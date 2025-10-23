@@ -125,33 +125,41 @@ def check_dual_entry_flow() -> Tuple[bool, List[str]]:
     print("\n✓ Checking dual-entry flow implementation...")
     
     issues = []
-    gate_file = project_root / "app/core/confirmation_gate.py"
     
-    if not gate_file.exists():
-        issues.append("  ❌ confirmation_gate.py not found")
-        return False, issues
-    
-    content = gate_file.read_text(encoding='utf-8')
-    
-    # Check for key implementation markers
-    markers = {
-        "entry_fills": "Entry fill tracking",
-        "ENTRY_TAKEN": "ENTRY_TAKEN template",
-        "ENTRY_CONSOLIDATED": "ENTRY_CONSOLIDATED template",
-        "VWAP": "VWAP calculation"
-    }
-    
-    for marker, description in markers.items():
-        if marker in content:
-            print(f"  ✅ {description} present")
-        else:
-            issues.append(f"  ❌ {description} missing")
-    
-    # Check for VWAP formula
-    if "total_value / total_qty" in content or "sum(e['price'] * e['qty']" in content:
-        print("  ✅ VWAP formula implemented")
+    # Check websocket handlers for entry fill tracking
+    ws_file = project_root / "app/trade/websocket_handlers.py"
+    if not ws_file.exists():
+        issues.append("  ❌ websocket_handlers.py not found")
     else:
-        issues.append("  ❌ VWAP formula not found")
+        ws_content = ws_file.read_text(encoding='utf-8')
+        if "_entry_fills" in ws_content:
+            print("  ✅ Entry fill tracking present")
+        else:
+            issues.append("  ❌ Entry fill tracking missing")
+    
+    # Check engine for templates
+    engine_file = project_root / "app/telegram/engine.py"
+    if not engine_file.exists():
+        issues.append("  ❌ engine.py not found")
+    else:
+        engine_content = engine_file.read_text(encoding='utf-8')
+        
+        if "def entry_taken" in engine_content:
+            print("  ✅ ENTRY_TAKEN template present")
+        else:
+            issues.append("  ❌ ENTRY_TAKEN template missing")
+            
+        if "def entry_consolidated" in engine_content:
+            print("  ✅ ENTRY_CONSOLIDATED template present")
+        else:
+            issues.append("  ❌ ENTRY_CONSOLIDATED template missing")
+    
+    # Check for VWAP calculation in websocket handlers
+    if ws_file.exists():
+        if "vwap" in ws_content.lower() or "total_value / total_qty" in ws_content:
+            print("  ✅ VWAP formula implemented")
+        else:
+            issues.append("  ❌ VWAP formula not found")
     
     if issues:
         return False, issues

@@ -191,6 +191,9 @@ class TradeFSM:
             
             self.position_size = position_size
             
+            # Save initial trade to database
+            await self._save_trade_to_database()
+            
             # Transition to leverage setting
             await self._transition_to(TradeState.LEVERAGE_SET)
             return True
@@ -290,6 +293,9 @@ class TradeFSM:
                 
                 # Initialize strategies now that we have entry price
                 self._initialize_strategies()
+                
+                # Update database with actual entry price and position size
+                await self._save_trade_to_database()
                 
                 system_logger.info(f"Position filled for {self.signal_data['symbol']}: {position.get('size')} contracts at {self.entry_price}")
                 await self._transition_to(TradeState.TP_SL_PLACED)
@@ -911,9 +917,46 @@ class TradeFSM:
         
         return False
     
+    async def _save_trade_to_database(self):
+        """Save trade data to database."""
+        try:
+            from app.storage.db import save_trade
+            
+            # Save trade data to database
+            await save_trade(
+                trade_id=self.trade_id,
+                symbol=self.signal_data['symbol'],
+                direction=self.signal_data['direction'],
+                entry_price=float(self.entry_price or 0),  # Use 0 if entry_price not set yet
+                size=float(self.position_size),
+                state=self.state.value
+            )
+            
+            system_logger.info(f"Trade {self.trade_id} saved to database", {
+                'symbol': self.signal_data['symbol'],
+                'state': self.state.value,
+                'entry_price': float(self.entry_price or 0),
+                'position_size': float(self.position_size)
+            })
+            
+        except Exception as e:
+            system_logger.error(f"Failed to save trade to database: {e}", exc_info=True)
+    
     async def _record_trade_completion(self):
         """Record trade completion in database."""
-        pass  # Placeholder
+        try:
+            # Update trade with final data
+            await self._save_trade_to_database()
+            
+            system_logger.info(f"Trade {self.trade_id} completion recorded", {
+                'symbol': self.signal_data['symbol'],
+                'final_state': self.state.value,
+                'final_pnl': str(self.current_pnl),
+                'pyramid_level': self.pyramid_level
+            })
+            
+        except Exception as e:
+            system_logger.error(f"Failed to record trade completion: {e}", exc_info=True)
     
     async def _emergency_close(self):
         """Emergency close position."""

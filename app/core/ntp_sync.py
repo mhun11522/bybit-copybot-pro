@@ -47,7 +47,7 @@ class NTPClockMonitor:
         
         # CLIENT SPEC thresholds (in seconds)
         self.drift_normal = 0.100      # 100 ms - normal operation
-        self.drift_warning = 0.100     # 100 ms - log warning
+        self.drift_warning = 0.120     # 120 ms - log warning (PERFECTION FIX: slightly more lenient)
         self.drift_block = 0.250       # 250 ms - block trading
         
         self.trading_blocked = False

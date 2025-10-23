@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 import pytz
 import uuid
+from app.core.logging import system_logger
 
 # Stockholm timezone for all timestamps
 STO_TZ = pytz.timezone("Europe/Stockholm")
@@ -225,8 +226,14 @@ def fmt_leverage_with_type(leverage, trade_type: str) -> str:
         Formatted string with type label and comma separator
     """
     try:
-        lev = Decimal(str(leverage)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-        lev_str = f"{lev:.2f}".replace(".", ",")  # Swedish: comma
+        lev = Decimal(str(leverage))
+        
+        # CLIENT FIX: Format leverage without unnecessary decimals
+        # x25 instead of x25.00, x10 instead of x10.00
+        if lev == lev.to_integral():
+            lev_str = str(int(lev))  # x25, x10, x6
+        else:
+            lev_str = f"{lev:.2f}".replace(".", ",")  # x13,56 for decimal values
         
         if trade_type == "Swing":
             return f"⚙️ Hävstång SWING: x{lev_str}"
@@ -261,7 +268,35 @@ def calculate_tp_sl_percentages(entry, tps: list, sl, side: str) -> dict:
         Dict with tp1_pct, tp2_pct, tp3_pct, tp4_pct, sl_pct (as floats)
     """
     result = {}
-    entry_dec = Decimal(str(entry)) if not isinstance(entry, Decimal) else entry
+    # CRITICAL FIX: Handle invalid entry values safely
+    try:
+        # First, safely convert entry to string to avoid any property access issues
+        if entry is None:
+            raise ValueError("Entry is None")
+        
+        # Safely get string representation first
+        entry_str = str(entry)
+        if not entry_str or entry_str.strip() == "":
+            raise ValueError("Entry is empty")
+        
+        # Now safely check types and convert
+        if isinstance(entry, Decimal):
+            entry_dec = entry
+        elif isinstance(entry, str):
+            # Normalize: replace comma with dot for Swedish format
+            entry_clean = entry.replace(",", ".")
+            entry_dec = Decimal(entry_clean)
+        else:
+            # Convert to string first, then to Decimal
+            entry_dec = Decimal(str(entry))
+            
+    except (ValueError, InvalidOperation, TypeError, AttributeError) as e:
+        system_logger.error(f"Invalid entry value: {entry} ({type(entry)}), cannot calculate percentages", {"entry": str(entry), "error": str(e)})
+        # Return empty result with error indication
+        return {
+            'tp1_pct': None, 'tp2_pct': None, 'tp3_pct': None, 'tp4_pct': None, 'sl_pct': None,
+            'error': f"Invalid entry: {entry}"
+        }
     
     # Calculate TP percentages
     for i, tp in enumerate(tps, 1):

@@ -89,7 +89,7 @@ class PyramidStrategyV2:
             
             # CLIENT SPEC VALIDATION: At +2.4%, ONLY leverage changes allowed
             # This is called "Pyramid Step 4" in Telegram templates (doc/requirement.txt Line 10)
-            if level_pct == Decimal("2.4"):
+            if level_pct == STRICT_CONFIG.pyramid_step4_trigger:
                 if action != "set_full_leverage":
                     error_msg = (
                         f"Pyramid +2.4% (Template 'Step 4') MUST be leverage-only. "
@@ -110,13 +110,13 @@ class PyramidStrategyV2:
                     raise ValueError(error_msg)
                 
                 # Enforce max leverage cap of 50x for this step
-                leverage_cap = config.get("leverage_cap", Decimal("50"))
-                if leverage_cap > Decimal("50"):
+                    leverage_cap = config.get("leverage_cap", STRICT_CONFIG.pyramid_leverage_cap)
+                if leverage_cap > STRICT_CONFIG.pyramid_leverage_cap:
                     system_logger.warning(
                         f"Leverage cap {leverage_cap} exceeds Step 4 max (50x), clamping",
                         {"symbol": self.symbol, "requested": str(leverage_cap), "capped": "50"}
                     )
-                    config["leverage_cap"] = Decimal("50")
+                    config["leverage_cap"] = STRICT_CONFIG.pyramid_leverage_cap
             
             success = False
             
@@ -153,7 +153,7 @@ class PyramidStrategyV2:
             elif action == "im_total":
                 # Steps 1, 4, 5, 6, 7: IM increased to target total
                 # CLIENT SPEC: This action NOT allowed at +2.4%
-                target_im = config.get("target_im", Decimal("20"))
+                target_im = config.get("target_im", STRICT_CONFIG.pyramid_position_size)
                 success = await self._update_position_size_to_total_im(target_im)
                 
             elif action == "sl_breakeven":
@@ -168,7 +168,7 @@ class PyramidStrategyV2:
             elif action == "add_im":
                 # Legacy action name - treat as im_total
                 # CLIENT SPEC: This action NOT allowed at +2.4%
-                target_im = config.get("target_im", Decimal("20"))
+                target_im = config.get("target_im", STRICT_CONFIG.pyramid_position_size)
                 success = await self._update_position_size_to_total_im(target_im)
             
             if success:
@@ -261,9 +261,9 @@ class PyramidStrategyV2:
                 current_size = Decimal(str(position.get("size", "0")))
                 
                 # If IM is less than 20 USDT and TPs were hit, add to position
-                if current_im < Decimal("20") and current_size > 0:
-                    # Add to position to bring IM to 20 USDT
-                    im_to_add = Decimal("20") - current_im
+                if current_im < STRICT_CONFIG.pyramid_position_size and current_size > 0:
+                    # Add to position to bring IM to target size
+                    im_to_add = STRICT_CONFIG.pyramid_position_size - current_im
                     await self._add_im_to_position(im_to_add)
                     
                     system_logger.info(f"Added {im_to_add} USDT IM to bring total to 20 USDT for {self.symbol}")
@@ -286,9 +286,9 @@ class PyramidStrategyV2:
                 
                 # Calculate breakeven + small buffer
                 if self.direction == "LONG":
-                    be_price = avg_price * Decimal("0.999")  # 0.1% below entry
+                    be_price = avg_price * STRICT_CONFIG.pyramid_price_tolerance_min  # Below entry
                 else:  # SELL
-                    be_price = avg_price * Decimal("1.001")  # 0.1% above entry
+                    be_price = avg_price * STRICT_CONFIG.pyramid_price_tolerance_max  # Above entry
                 
                 # Place new SL order
                 order_body = {
@@ -343,7 +343,7 @@ class PyramidStrategyV2:
             # Determine target leverage
             if "ETH" in self.symbol.upper():
                 # ETH: min(50, instrument_max)
-                target_leverage = min(Decimal("50"), instrument_max)
+                target_leverage = min(STRICT_CONFIG.pyramid_leverage_cap, instrument_max)
                 system_logger.info(f"ETH pyramid +2.4% (leverage-only): setting leverage to {target_leverage}x (cap=50x, instrument_max={instrument_max}x)")
             else:
                 # Other symbols: use instrument max

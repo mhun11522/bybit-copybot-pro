@@ -104,7 +104,7 @@ class HedgeStrategyV2:
                 balance = await self.bybit.get_wallet_balance("UNIFIED")
                 if balance and balance.get('retCode') == 0:
                     total_balance = Decimal(str(balance.get('result', {}).get('totalWalletBalance', '0')))
-                    if total_balance < Decimal("10"):  # Minimum 10 USDT required
+                    if total_balance < STRICT_CONFIG.hedge_leverage:  # Minimum 10 USDT required
                         system_logger.warning(f"Insufficient balance for hedge: {total_balance} USDT")
                         self.activated = True  # Mark as activated to prevent retries
                         return False
@@ -146,7 +146,7 @@ class HedgeStrategyV2:
                 
                 # Get leverage from position (FROM BYBIT!)
                 pos = await self.bybit.positions("linear", self.symbol)
-                current_leverage = Decimal("6.00")  # Fallback
+                current_leverage = STRICT_CONFIG.hedge_breakeven_leverage  # Fallback
                 if pos.get("result", {}).get("list"):
                     current_leverage = Decimal(str(pos["result"]["list"][0].get("leverage", "6.00")))
                 

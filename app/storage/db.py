@@ -136,6 +136,24 @@ async def init_db():
         # Lightweight migrations: ensure missing columns exist
         await _migrate_trades_table(db)
         
+        # PERFECTION FIX: Create error_logs table for comprehensive error tracking
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS error_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                level TEXT NOT NULL,
+                logger TEXT NOT NULL,
+                message TEXT NOT NULL,
+                error_type TEXT,
+                trace_id TEXT,
+                exception TEXT,
+                data TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        
         # Create unified trades table with all required columns
         await db.execute(
             """
@@ -154,6 +172,8 @@ async def init_db():
             realized_pnl REAL DEFAULT 0,
             pnl REAL DEFAULT 0,
             pnl_pct REAL DEFAULT 0,
+            profit REAL DEFAULT 0,
+            profit_percent REAL DEFAULT 0,
             pyramid_level INTEGER DEFAULT 0,
             hedge_count INTEGER DEFAULT 0,
             reentry_count INTEGER DEFAULT 0,
@@ -230,6 +250,8 @@ async def _migrate_trades_table(db) -> None:
             ("status", "ALTER TABLE trades ADD COLUMN status TEXT DEFAULT 'active'"),
             ("pnl", "ALTER TABLE trades ADD COLUMN pnl REAL DEFAULT 0"),
             ("pnl_pct", "ALTER TABLE trades ADD COLUMN pnl_pct REAL DEFAULT 0"),
+            ("profit", "ALTER TABLE trades ADD COLUMN profit REAL DEFAULT 0"),
+            ("profit_percent", "ALTER TABLE trades ADD COLUMN profit_percent REAL DEFAULT 0"),
             ("pyramid_level", "ALTER TABLE trades ADD COLUMN pyramid_level INTEGER DEFAULT 0"),
             ("hedge_count", "ALTER TABLE trades ADD COLUMN hedge_count INTEGER DEFAULT 0"),
             ("reentry_count", "ALTER TABLE trades ADD COLUMN reentry_count INTEGER DEFAULT 0"),
@@ -254,7 +276,7 @@ async def _migrate_trades_table(db) -> None:
 async def save_trade(trade_id: str, symbol: str, direction: str, entry_price: float, size: float, state: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR REPLACE INTO trades (trade_id,symbol,direction,entry_price,size,state) VALUES (?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO trades (trade_id,symbol,direction,avg_entry,position_size,state) VALUES (?,?,?,?,?,?)",
             (trade_id, symbol, direction, entry_price, size, state),
         )
         await db.commit()

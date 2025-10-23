@@ -314,7 +314,8 @@ async def main():
         
         # Start position manager
         position_manager = await get_position_manager()
-        await position_manager.start_cleanup_scheduler()
+        # NOTE: Position manager cleanup scheduler disabled to prevent conflict with global cleanup scheduler
+        # await position_manager.start_cleanup_scheduler()
         system_logger.info("Position manager started")
         
         # Start Bybit WebSocket for real-time updates (if available)
